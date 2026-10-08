@@ -110,3 +110,405 @@ th.num > div {
     right: 0.75rem;
     top: 0.5rem;
 }
+
+/* Grid rows open the detail page. */
+.clickable-rows tbody tr {
+    cursor: pointer;
+}
+
+/* ---- Detail page ---- */
+.detail-scroll {
+    height: 100%;
+    overflow: auto;
+}
+
+.detail {
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+}
+
+.detail-header {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+}
+
+.detail-header .path {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 50vw;
+}
+
+.back {
+    color: var(--muted-foreground);
+    text-decoration: none;
+}
+
+.back:hover {
+    color: var(--foreground);
+}
+
+.detail-card-content {
+    padding-top: 1.25rem;
+}
+
+.overview {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 0.35rem 1.25rem;
+    margin: 0;
+}
+
+.overview dt {
+    color: var(--muted-foreground);
+}
+
+.overview dd {
+    margin: 0;
+    overflow-wrap: anywhere;
+}
+
+.error-text {
+    color: var(--destructive);
+}
+
+.warning {
+    padding: 0.5rem 0.75rem;
+    border-radius: 0.375rem;
+    background: color-mix(in srgb, #f59e0b 15%, transparent);
+}
+
+.notice.small {
+    padding: 0.25rem 0;
+    font-size: 0.85em;
+}
+
+.sub-heading {
+    margin: 1.25rem 0 0.5rem;
+    font-weight: 600;
+}
+
+.swatch {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+    flex: none;
+}
+
+.link-button {
+    background: none;
+    border: none;
+    padding: 0;
+    color: var(--muted-foreground);
+    cursor: pointer;
+    font: inherit;
+    font-size: 0.85em;
+    text-decoration: underline;
+}
+
+.link-button:hover {
+    color: var(--foreground);
+}
+
+pre.code {
+    margin: 0;
+    padding: 0.75rem;
+    border-radius: 0.375rem;
+    background: var(--muted);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.8rem;
+    overflow: auto;
+    max-height: 70vh;
+}
+
+pre.code.wrap {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+.body-meta {
+    display: flex;
+    gap: 1rem;
+    align-items: center;
+    padding: 0.25rem 0 0.5rem;
+    color: var(--muted-foreground);
+    font-size: 0.85em;
+}
+
+.stream-toggle {
+    justify-content: flex-start;
+    margin-bottom: 0.5rem;
+}
+
+table.kv {
+    border-collapse: collapse;
+    width: 100%;
+}
+
+table.kv th, table.kv td {
+    text-align: left;
+    vertical-align: top;
+    padding: 0.25rem 0.75rem 0.25rem 0;
+    border-bottom: 1px solid var(--border);
+    overflow-wrap: anywhere;
+}
+
+table.kv th {
+    font-weight: 500;
+    white-space: nowrap;
+    color: var(--muted-foreground);
+}
+
+/* Context breakdown */
+.stack-bar {
+    display: flex;
+    height: 14px;
+    border-radius: 4px;
+    overflow: hidden;
+    margin-bottom: 0.75rem;
+    background: var(--muted);
+}
+
+.stack-bar > span {
+    height: 100%;
+}
+
+table.breakdown {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+}
+
+table.breakdown td {
+    padding: 0.2rem 0.5rem;
+    border-bottom: 1px solid var(--border);
+}
+
+table.breakdown tr {
+    cursor: pointer;
+}
+
+table.breakdown tr:hover {
+    background: var(--muted);
+}
+
+.bd-name {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    min-width: 0;
+    white-space: nowrap;
+}
+
+table.breakdown td.bd-bar {
+    width: 30%;
+}
+
+table.breakdown td.num {
+    width: 90px;
+}
+
+.bd-bar > span {
+    display: block;
+    height: 8px;
+    border-radius: 2px;
+    min-width: 1px;
+}
+
+.bd-category {
+    font-weight: 600;
+}
+
+.bd-item .bd-name {
+    padding-left: 1.5rem;
+}
+
+.bd-block .bd-name {
+    padding-left: 3.5rem;
+    color: var(--muted-foreground);
+}
+
+.bd-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.bd-count {
+    color: var(--muted-foreground);
+    font-size: 0.85em;
+}
+
+.chev {
+    display: inline-block;
+    width: 1em;
+    flex: none;
+    color: var(--muted-foreground);
+}
+
+/* Conversation tree */
+.tree {
+    display: flex;
+    flex-direction: column;
+}
+
+.seg {
+    border-left: 2px solid transparent;
+}
+
+.seg .seg {
+    margin-left: 1rem;
+}
+
+.seg.cached > .seg-head {
+    background: color-mix(in srgb, #0ea5e9 7%, transparent);
+}
+
+.seg.highlighted > .seg-head {
+    outline: 2px solid #f59e0b;
+    outline-offset: -2px;
+}
+
+.seg-head {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.25rem 0.5rem;
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+    min-width: 0;
+}
+
+.seg-head:hover {
+    background: var(--muted);
+}
+
+.seg-label {
+    font-weight: 500;
+    white-space: nowrap;
+}
+
+.seg-group > .seg-head .seg-label, .seg-message > .seg-head .seg-label {
+    font-weight: 600;
+}
+
+.seg-kind {
+    color: var(--muted-foreground);
+    font-size: 0.8em;
+    white-space: nowrap;
+}
+
+.seg-preview {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--muted-foreground);
+}
+
+.seg-tokens {
+    margin-left: auto;
+    color: var(--muted-foreground);
+    white-space: nowrap;
+}
+
+.cache-mark {
+    font-size: 0.75em;
+    color: #0284c7;
+    white-space: nowrap;
+}
+
+.seg-body {
+    padding: 0.25rem 0 0.5rem 0.5rem;
+}
+
+.seg-body > pre.code, .seg-body > .md {
+    margin: 0.25rem 0.5rem 0.25rem 1rem;
+}
+
+.seg-note {
+    margin: 0.25rem 1rem;
+    color: var(--muted-foreground);
+    font-size: 0.85em;
+}
+
+.seg-tools {
+    display: flex;
+    gap: 0.75rem;
+    justify-content: flex-end;
+    padding: 0 0.5rem;
+}
+
+/* Rendered markdown; the prebuilt component CSS resets element styles. */
+.md {
+    line-height: 1.55;
+    overflow-wrap: anywhere;
+}
+
+.md h1, .md h2, .md h3, .md h4 {
+    font-weight: 600;
+    margin: 1rem 0 0.4rem;
+}
+
+.md h1 { font-size: 1.3em; }
+.md h2 { font-size: 1.15em; }
+.md h3, .md h4 { font-size: 1em; }
+
+.md p {
+    margin: 0.4rem 0;
+}
+
+.md ul, .md ol {
+    margin: 0.4rem 0;
+    padding-left: 1.5rem;
+}
+
+.md ul { list-style: disc; }
+.md ol { list-style: decimal; }
+
+.md code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.85em;
+    background: var(--muted);
+    padding: 0.05rem 0.3rem;
+    border-radius: 0.25rem;
+}
+
+.md pre {
+    background: var(--muted);
+    padding: 0.6rem;
+    border-radius: 0.375rem;
+    overflow: auto;
+}
+
+.md pre code {
+    background: none;
+    padding: 0;
+}
+
+.md blockquote {
+    border-left: 3px solid var(--border);
+    margin: 0.4rem 0;
+    padding-left: 0.75rem;
+    color: var(--muted-foreground);
+}
+
+.md table {
+    border-collapse: collapse;
+}
+
+.md th, .md td {
+    border: 1px solid var(--border);
+    padding: 0.2rem 0.5rem;
+}
+
+.md a {
+    text-decoration: underline;
+}

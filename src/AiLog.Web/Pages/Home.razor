@@ -6,7 +6,7 @@
 
 <div class="grid-scroll">
     <BbDataGrid TData="ExchangeSummary" Items="Feed.Items" ItemKey="@(s => s.Id)"
-                Virtualize="true" ShowPagination="false" StickyHeader="true">
+                Virtualize="true" ShowPagination="false" StickyHeader="true" OnRowClick="Open" Class="clickable-rows">
         <Columns>
             <BbDataGridTemplateColumn Title="Time" Width="120px" Context="s">
                 <span class="mono" title="@Display.FullTime(s.StartedAt)">@Display.Time(s.StartedAt)</span>
@@ -58,6 +58,8 @@
     private string ProxyExample => new Uri(new Uri(Navigation.BaseUri), "/anthropic").ToString();
 
     protected override void OnInitialized() => Feed.Changed += OnFeedChanged;
+
+    private void Open(ExchangeSummary summary) => Navigation.NavigateTo($"exchanges/{Uri.EscapeDataString(summary.Id)}");
 
     private void OnFeedChanged() => InvokeAsync(StateHasChanged);
 

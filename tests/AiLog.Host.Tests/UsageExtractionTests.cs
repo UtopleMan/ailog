@@ -1,9 +1,10 @@
 using System.Text.Json;
 using AiLog.Contracts;
+using AiLog.Shared.Providers;
 
 namespace AiLog.Host.Tests;
 
-public sealed class TokenUsageExtractorTests
+public sealed class UsageExtractionTests
 {
     [Fact]
     public void Anthropic_json_totals_input_including_cache_reads_and_writes()
@@ -37,6 +38,22 @@ public sealed class TokenUsageExtractorTests
         Assert.Equal(5010, usage!.InputTokens);
         Assert.Equal(42, usage.OutputTokens);
         Assert.Equal(5000, usage.CacheReadTokens);
+    }
+
+    [Fact]
+    public void Anthropic_message_delta_with_output_token_details_is_still_anthropic()
+    {
+        var usage = Extract(Sse("""
+            event: message_start
+            data: {"type":"message_start","message":{"usage":{"input_tokens":2,"cache_creation_input_tokens":3476,"cache_read_input_tokens":35378,"output_tokens":1}}}
+
+            event: message_delta
+            data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":2,"cache_creation_input_tokens":3476,"cache_read_input_tokens":35378,"output_tokens":62,"output_tokens_details":{"thinking_tokens":0}}}
+
+            """));
+
+        Assert.Equal(38856, usage!.InputTokens);
+        Assert.Equal(62, usage.OutputTokens);
     }
 
     [Fact]
@@ -118,8 +135,8 @@ public sealed class TokenUsageExtractorTests
     public void Responses_without_usage_have_none()
     {
         Assert.Null(Extract(Json("""{"error":{"type":"not_found"}}""")));
-        Assert.Null(TokenUsageExtractor.Extract(null));
-        Assert.Null(TokenUsageExtractor.Extract(new LoggedResponse { StatusCode = 204, Headers = [] }));
+        Assert.Null(ProviderRegistry.ExtractUsage((LoggedResponse?)null));
+        Assert.Null(ProviderRegistry.ExtractUsage(new LoggedResponse { StatusCode = 204, Headers = [] }));
     }
 
     [Fact]
@@ -132,10 +149,10 @@ public sealed class TokenUsageExtractorTests
             Body = new LoggedBody { Format = BodyFormat.Text, SizeBytes = 1, Content = JsonSerializer.SerializeToElement("""data: {"usage":{"input_tokens":1}}""", AiLogJsonContext.Default.String) },
         };
 
-        Assert.Null(TokenUsageExtractor.Extract(response));
+        Assert.Null(ProviderRegistry.ExtractUsage(response));
     }
 
-    private static TokenUsage? Extract(LoggedResponse response) => TokenUsageExtractor.Extract(response);
+    private static TokenUsage? Extract(LoggedResponse response) => ProviderRegistry.ExtractUsage(response);
 
     private static LoggedResponse Json(string json) => new()
     {

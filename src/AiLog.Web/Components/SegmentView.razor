@@ -1,0 +1,103 @@
+@* One collapsible row of a request or response tree. Content (and markdown) is only rendered when expanded. *@
+@inject IJSRuntime JS
+
+<div class="seg seg-@Segment.Kind.ToString().ToLowerInvariant() @(Segment.Cached ? "cached" : "") @(State.Highlighted == Segment.Id ? "highlighted" : "")" id="@Segment.Id">
+    <div class="seg-head" @onclick="Toggle">
+        <span class="chev">@(Open ? "▾" : "▸")</span>
+        @if (Segment.IsLeaf && Segment.Kind is not (SegmentKind.Group or SegmentKind.Message) && Segment.Category is { } category)
+        {
+            <span class="swatch" style="background:@CategoryColors.For(category)" title="@category"></span>
+        }
+        <span class="seg-label">@Segment.Label</span>
+        @if (Segment.Kind != SegmentKind.Group && Segment.Kind != SegmentKind.Message && Segment.Kind != SegmentKind.Text)
+        {
+            <span class="seg-kind">@KindLabel</span>
+        }
+        @if (!Open)
+        {
+            <span class="seg-preview">@Segment.Preview()</span>
+        }
+        else
+        {
+            <span class="spacer"></span>
+        }
+        @if (Segment.CacheBreakpoint)
+        {
+            <span class="cache-mark" title="Prompt-cache breakpoint: everything up to here can be read from cache">cache ⚑</span>
+        }
+        <span class="seg-tokens mono" title="@($"≈{Display.ExactTokens(Segment.Tokens)} tokens")">@Display.Tokens(Segment.Tokens)</span>
+    </div>
+
+    @if (Open)
+    {
+        <div class="seg-body">
+            @if (Segment.Note is { } note)
+            {
+                <p class="seg-note">@note</p>
+            }
+
+            @if (!Segment.IsLeaf)
+            {
+                @foreach (var child in Segment.Children)
+                {
+                    <SegmentView @key="child.Id" Segment="child" State="State" />
+                }
+            }
+            else if (Segment.Text is { Length: > 0 } text)
+            {
+                <div class="seg-tools">
+                    <button class="link-button" @onclick="ToggleSource">@(ShowSource ? "Rendered" : "Source")</button>
+                    <button class="link-button" @onclick="() => Copy(text)">Copy</button>
+                </div>
+                @if (ShowSource)
+                {
+                    <pre class="code wrap">@text</pre>
+                }
+                else
+                {
+                    <div class="md">@State.Rendered(Segment)</div>
+                }
+            }
+            else if (Segment.Json is { } json)
+            {
+                <div class="seg-tools">
+                    <button class="link-button" @onclick="() => Copy(json)">Copy</button>
+                </div>
+                <pre class="code">@json</pre>
+            }
+            else if (Segment.IsLeaf && Segment.Kind != SegmentKind.Image && Segment.Kind != SegmentKind.Document)
+            {
+                <p class="seg-note">(empty)</p>
+            }
+        </div>
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public ContextSegment Segment { get; set; } = null!;
+    [Parameter, EditorRequired] public SegmentViewState State { get; set; } = null!;
+
+    private bool Open => State.IsExpanded(Segment);
+
+    private bool ShowSource => State.ShowSource.Contains(Segment.Id);
+
+    private string KindLabel => Segment.Kind switch
+    {
+        SegmentKind.ToolDefinition => "tool definition",
+        SegmentKind.ToolCall => "tool call",
+        SegmentKind.ToolResult => "tool result",
+        _ => Segment.Kind.ToString().ToLowerInvariant(),
+    };
+
+    private void Toggle() => State.Toggle(Segment);
+
+    private void ToggleSource()
+    {
+        if (!State.ShowSource.Remove(Segment.Id))
+        {
+            State.ShowSource.Add(Segment.Id);
+        }
+    }
+
+    private async Task Copy(string text) => await JS.InvokeVoidAsync("navigator.clipboard.writeText", text);
+}

@@ -1,0 +1,100 @@
+@* Stacked composition bar plus a category → item → block tree of estimated tokens. *@
+
+@if (Total > 0)
+{
+    <div class="stack-bar">
+        @foreach (var category in Categories.Where(c => c.Tokens > 0))
+        {
+            <span style="width:@Percent(category.Tokens, Total);background:@CategoryColors.For(category.Name)"
+                  title="@($"{category.Name}: ≈{Display.ExactTokens(category.Tokens)} tokens")"></span>
+        }
+    </div>
+}
+
+<table class="breakdown">
+    <tbody>
+        @foreach (var category in Categories)
+        {
+            var categoryOpen = !_collapsedCategories.Contains(category.Name);
+            <tr class="bd-category" @onclick="() => ToggleCategory(category.Name)">
+                <td class="bd-name">
+                    <span class="chev">@(categoryOpen ? "▾" : "▸")</span>
+                    <span class="swatch" style="background:@CategoryColors.For(category.Name)"></span>
+                    @category.Name
+                </td>
+                <td class="bd-bar"><span style="width:@Percent(category.Tokens, MaxCategory);background:@CategoryColors.For(category.Name)"></span></td>
+                <td class="num mono" title="@($"≈{Display.ExactTokens(category.Tokens)} tokens")">@Display.Tokens(category.Tokens)</td>
+            </tr>
+
+            @if (categoryOpen)
+            {
+                var maxItem = category.Items.Max(i => i.Tokens);
+                @foreach (var item in category.Items)
+                {
+                    var key = category.Name + "\n" + item.Label;
+                    var itemOpen = _expandedItems.Contains(key);
+                    <tr class="bd-item" @onclick="() => ToggleItem(key, item)">
+                        <td class="bd-name">
+                            <span class="chev">@(item.Segments.Count == 1 ? "" : itemOpen ? "▾" : "▸")</span>
+                            <span class="bd-label" title="@item.Label">@item.Label</span>
+                            @if (item.Segments.Count > 1)
+                            {
+                                <span class="bd-count">×@item.Segments.Count</span>
+                            }
+                        </td>
+                        <td class="bd-bar"><span style="width:@Percent(item.Tokens, maxItem);background:@CategoryColors.For(category.Name)"></span></td>
+                        <td class="num mono" title="@($"≈{Display.ExactTokens(item.Tokens)} tokens")">@Display.Tokens(item.Tokens)</td>
+                    </tr>
+
+                    @if (itemOpen && item.Segments.Count > 1)
+                    {
+                        @foreach (var segment in item.Segments)
+                        {
+                            <tr class="bd-block" @onclick="() => OnSelect.InvokeAsync(segment)">
+                                <td class="bd-name"><span class="bd-label" title="@segment.Preview(400)">@segment.Label · @segment.Preview(80)</span></td>
+                                <td></td>
+                                <td class="num mono">@Display.Tokens(segment.Tokens)</td>
+                            </tr>
+                        }
+                    }
+                }
+            }
+        }
+    </tbody>
+</table>
+
+@code {
+    [Parameter, EditorRequired] public IReadOnlyList<BreakdownCategory> Categories { get; set; } = [];
+    [Parameter] public EventCallback<ContextSegment> OnSelect { get; set; }
+
+    private readonly HashSet<string> _collapsedCategories = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _expandedItems = new(StringComparer.Ordinal);
+
+    private long Total => Categories.Sum(c => c.Tokens);
+
+    private long MaxCategory => Categories.Count == 0 ? 0 : Categories.Max(c => c.Tokens);
+
+    private static string Percent(long part, long whole) =>
+        whole <= 0 ? "0%" : (100.0 * part / whole).ToString("0.###", System.Globalization.CultureInfo.InvariantCulture) + "%";
+
+    private void ToggleCategory(string name)
+    {
+        if (!_collapsedCategories.Remove(name))
+        {
+            _collapsedCategories.Add(name);
+        }
+    }
+
+    /// <summary>Single-block items jump straight to the block; others expand to list their blocks.</summary>
+    private async Task ToggleItem(string key, BreakdownItem item)
+    {
+        if (item.Segments.Count == 1)
+        {
+            await OnSelect.InvokeAsync(item.Segments[0]);
+        }
+        else if (!_expandedItems.Remove(key))
+        {
+            _expandedItems.Add(key);
+        }
+    }
+}

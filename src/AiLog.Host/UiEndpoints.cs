@@ -2,6 +2,7 @@ using System.Net.ServerSentEvents;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using AiLog.Contracts;
+using Microsoft.AspNetCore.Mvc;
 
 namespace AiLog.Host;
 
@@ -13,6 +14,9 @@ internal static class UiEndpoints
     private static readonly PathString Root = "/" + Prefix;
     private static readonly PathString PackageContent = "/_content";
     private static readonly PathString Api = Root + "/api";
+
+    /// <summary>Client route of the detail page. Log ids contain a '.' (milliseconds), so they look like file names.</summary>
+    private static readonly PathString ExchangePages = Root + "/exchanges";
 
     /// <summary>Must run before routing.</summary>
     public static void UseUiPaths(this WebApplication app) => app.Use((context, next) =>
@@ -32,7 +36,8 @@ internal static class UiEndpoints
         }
         // Client-side routes (anything without a file extension) load the app shell. Done here rather than with
         // MapFallbackToFile because fallback endpoints lose to the proxy's catch-all.
-        else if (path.StartsWithSegments(Root) && !path.StartsWithSegments(Api) && !Path.HasExtension(path.Value))
+        else if (path.StartsWithSegments(ExchangePages)
+            || (path.StartsWithSegments(Root) && !path.StartsWithSegments(Api) && !Path.HasExtension(path.Value)))
         {
             context.Request.Path = Root + "/index.html";
         }
@@ -47,12 +52,37 @@ internal static class UiEndpoints
             TypedResults.Json(await index.GetAllAsync(), AiLogApiJsonContext.Default.ListExchangeSummary));
         api.MapGet("/logs/events", (LogIndex index, IHostApplicationLifetime lifetime, CancellationToken aborted) =>
             TypedResults.ServerSentEvents(StreamEvents(index, lifetime.ApplicationStopping, aborted)));
+        api.MapGet("/logs/{id}", GetLog);
 
         // Static web assets of AiLog.Web are published under the _ailog base path.
         if (HasAssets(app))
         {
             app.MapStaticAssets();
         }
+    }
+
+    /// <summary>The log file as written, streamed from disk without re-serialising (files can be several MB).</summary>
+    private static IResult GetLog(string id, [FromServices] AiLogOptions options)
+    {
+        if (ResolveLogFile(options.LogsPath, id) is not { } path)
+        {
+            return TypedResults.BadRequest();
+        }
+
+        return File.Exists(path) ? TypedResults.PhysicalFile(path, "application/json") : TypedResults.NotFound();
+    }
+
+    /// <summary>Null unless the id is a plain file name that resolves directly inside the logs folder.</summary>
+    internal static string? ResolveLogFile(string logsPath, string id)
+    {
+        if (id.Length == 0 || id.StartsWith('.') || !id.All(c => char.IsAsciiLetterOrDigit(c) || c is '.' or '_' or '-'))
+        {
+            return null;
+        }
+
+        var directory = Path.GetFullPath(logsPath);
+        var path = Path.GetFullPath(Path.Combine(directory, id + ".json"));
+        return Path.GetDirectoryName(path) == directory.TrimEnd(Path.DirectorySeparatorChar) ? path : null;
     }
 
     public static bool HasAssets(WebApplication app) =>

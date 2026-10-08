@@ -1,0 +1,24 @@
+@* Logged headers; credentials were already redacted when the log was written. *@
+
+@if (Headers.Count == 0)
+{
+    <p class="notice">No headers.</p>
+}
+else
+{
+    <table class="kv">
+        <tbody>
+            @foreach (var (name, value) in Headers.OrderBy(h => h.Key, StringComparer.OrdinalIgnoreCase))
+            {
+                <tr>
+                    <th class="mono">@name</th>
+                    <td class="mono">@value</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+@code {
+    [Parameter, EditorRequired] public Dictionary<string, string> Headers { get; set; } = [];
+}

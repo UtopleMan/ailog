@@ -1,0 +1,351 @@
+@page "/exchanges/{Id}"
+@implements IDisposable
+@inject HttpClient Http
+@inject LogFeed Feed
+@inject IJSRuntime JS
+
+<PageTitle>ailog · @(_log is null ? Id : $"#{_log.Sequence} {_summaryPath}")</PageTitle>
+
+<div class="detail-scroll">
+    <div class="detail">
+        <div class="detail-header">
+            <a class="back" href="./">← All requests</a>
+            @if (_log is not null)
+            {
+                <span class="mono">#@_log.Sequence</span>
+                <span class="mono">@_log.Request.Method</span>
+                <span class="mono path" title="@_log.Request.Target">@_summaryPath</span>
+                <BbBadge Variant="@Display.StatusVariant(_log.Response?.StatusCode)">@Display.Status(_log.Response?.StatusCode)</BbBadge>
+                @if (Display.Outcome(_log.Outcome) is { } outcome)
+                {
+                    <BbBadge Variant="BadgeVariant.Outline">@outcome</BbBadge>
+                }
+            }
+            <span class="spacer"></span>
+            <BbButton Variant="ButtonVariant.Outline" Size="ButtonSize.Small" Href="@NeighbourHref(+1)" Disabled="@(NeighbourHref(+1) is null)">← Older</BbButton>
+            <BbButton Variant="ButtonVariant.Outline" Size="ButtonSize.Small" Href="@NeighbourHref(-1)" Disabled="@(NeighbourHref(-1) is null)">Newer →</BbButton>
+        </div>
+
+        @if (_state == LoadState.Loading)
+        {
+            <p class="notice">Loading…</p>
+        }
+        else if (_state == LoadState.NotFound)
+        {
+            <p class="notice">No log file named <code>@Id</code>. <a href="./">Back to all requests</a></p>
+        }
+        else if (_state == LoadState.Failed)
+        {
+            <p class="warning">Could not load the log: @_loadError</p>
+        }
+        else if (_log is not null && _analysis is not null)
+        {
+            <BbCard Class="detail-card">
+                <BbCardContent Class="detail-card-content">
+                    <dl class="overview">
+                        <dt>Started</dt><dd class="mono">@Display.FullTime(_log.StartedAt)</dd>
+                        <dt>Completed</dt><dd class="mono">@Display.FullTime(_log.CompletedAt)</dd>
+                        <dt>Duration</dt><dd class="mono">@Display.Duration(_log.DurationMs)</dd>
+                        <dt>Route</dt><dd>@_log.Route</dd>
+                        <dt>Upstream</dt><dd class="mono">@_log.UpstreamUrl</dd>
+                        <dt>Format</dt><dd>@(_analysis.Provider?.Name ?? "not recognised")@(_analysis.Harness is { } harness ? $" · {harness.Name}" : "")</dd>
+                        @if (_analysis.Model is { } model)
+                        {
+                            <dt>Model</dt><dd class="mono">@model</dd>
+                        }
+                        @if (_log.Error is { } error)
+                        {
+                            <dt>Error</dt><dd class="error-text">@error</dd>
+                        }
+                        <dt>Input</dt><dd class="mono">@InputSummary</dd>
+                        <dt>Output</dt><dd class="mono">@(_analysis.Usage?.OutputTokens is { } output ? $"{Display.ExactTokens(output)} tokens" : "—")</dd>
+                    </dl>
+                    @if (_analysis.Error is { } analysisError)
+                    {
+                        <p class="warning">@analysisError</p>
+                    }
+                </BbCardContent>
+            </BbCard>
+
+            @if (_analysis.Request is { } request && _analysis.InputBreakdown.Count > 0)
+            {
+                <BbCard Class="detail-card">
+                    <BbCardHeader>
+                        <BbCardTitle>Context</BbCardTitle>
+                        <BbCardDescription>
+                            ≈ estimated per part.
+                            @(_analysis.InputCalibrated
+                                ? $"Parts are scaled to add up to the real {Display.ExactTokens(request.Tokens)} input tokens; images and PDFs use their own estimate."
+                                : "No input token count in the response, so parts are characters / 4 (uncalibrated).")
+                            Shaded rows in the conversation are inside the cached prefix.
+                        </BbCardDescription>
+                    </BbCardHeader>
+                    <BbCardContent>
+                        <ContextBreakdownView Categories="_analysis.InputBreakdown" OnSelect="Reveal" />
+                        @if (_analysis.OutputBreakdown.Count > 0)
+                        {
+                            <h4 class="sub-heading">Output @(_analysis.OutputCalibrated ? "" : "(uncalibrated)")</h4>
+                            <ContextBreakdownView Categories="_analysis.OutputBreakdown" OnSelect="Reveal" />
+                        }
+                    </BbCardContent>
+                </BbCard>
+            }
+
+            <BbCard Class="detail-card">
+                <BbCardHeader><BbCardTitle>Request</BbCardTitle></BbCardHeader>
+                <BbCardContent>
+                    <BbTabs @bind-Value="_requestTab">
+                        <BbTabsList>
+                            @if (_analysis.Request is not null)
+                            {
+                                <BbTabsTrigger Value="@Conversation">Conversation</BbTabsTrigger>
+                            }
+                            <BbTabsTrigger Value="@Body">Body</BbTabsTrigger>
+                            <BbTabsTrigger Value="@HeadersTab">Headers</BbTabsTrigger>
+                        </BbTabsList>
+                        @if (_analysis.Request is { } requestTree)
+                        {
+                            <BbTabsContent Value="@Conversation">
+                                <div class="tree">
+                                    @foreach (var top in requestTree.Children.Where(c => c.Children.Count > 0))
+                                    {
+                                        <SegmentView @key="top.Id" Segment="top" State="_view" />
+                                    }
+                                </div>
+                            </BbTabsContent>
+                        }
+                        <BbTabsContent Value="@Body"><BodyView Body="_log.Request.Body" /></BbTabsContent>
+                        <BbTabsContent Value="@HeadersTab"><HeadersTable Headers="_log.Request.Headers" /></BbTabsContent>
+                    </BbTabs>
+                </BbCardContent>
+            </BbCard>
+
+            <BbCard Class="detail-card">
+                <BbCardHeader>
+                    <BbCardTitle>Response</BbCardTitle>
+                    @if (_analysis.Response?.Note is { } responseNote)
+                    {
+                        <BbCardDescription>@responseNote</BbCardDescription>
+                    }
+                </BbCardHeader>
+                <BbCardContent>
+                    @if (_log.Response is null)
+                    {
+                        <p class="notice">The upstream never returned response headers.</p>
+                    }
+                    else
+                    {
+                        <BbTabs @bind-Value="_responseTab">
+                            <BbTabsList>
+                                @if (HasOutput)
+                                {
+                                    <BbTabsTrigger Value="@Conversation">Conversation</BbTabsTrigger>
+                                }
+                                <BbTabsTrigger Value="@Body">Body</BbTabsTrigger>
+                                <BbTabsTrigger Value="@HeadersTab">Headers</BbTabsTrigger>
+                            </BbTabsList>
+                            @if (HasOutput && _analysis.Response is { } responseTree)
+                            {
+                                <BbTabsContent Value="@Conversation">
+                                    <div class="tree">
+                                        @foreach (var block in responseTree.Children)
+                                        {
+                                            <SegmentView @key="block.Id" Segment="block" State="_view" />
+                                        }
+                                    </div>
+                                </BbTabsContent>
+                            }
+                            <BbTabsContent Value="@Body">
+                                @if (_analysis.Events is { } events)
+                                {
+                                    <BbToggleGroup TValue="string" @bind-Value="_streamView" Type="ToggleGroupType.Single" Required="true"
+                                                   Variant="ToggleVariant.Outline" Size="ToggleSize.Small" Class="stream-toggle">
+                                        <BbToggleGroupItem TValue="string" Value="@Reassembled" Disabled="@(_analysis.Reassembled is null)">Reassembled</BbToggleGroupItem>
+                                        <BbToggleGroupItem TValue="string" Value="@EventsView">Events (@events.Count)</BbToggleGroupItem>
+                                        <BbToggleGroupItem TValue="string" Value="@Raw">Raw</BbToggleGroupItem>
+                                    </BbToggleGroup>
+                                    @if (_streamView == Reassembled && _reassembledText is { } reassembled)
+                                    {
+                                        <p class="notice small">The final message rebuilt from the stream, as a non-streaming call would have returned it.</p>
+                                        <pre class="code">@reassembled</pre>
+                                    }
+                                    else if (_streamView == EventsView)
+                                    {
+                                        <pre class="code">@EventsText</pre>
+                                    }
+                                    else
+                                    {
+                                        <BodyView Body="_log.Response.Body" />
+                                    }
+                                }
+                                else
+                                {
+                                    <BodyView Body="_log.Response.Body" />
+                                }
+                            </BbTabsContent>
+                            <BbTabsContent Value="@HeadersTab"><HeadersTable Headers="_log.Response.Headers" /></BbTabsContent>
+                        </BbTabs>
+                    }
+                </BbCardContent>
+            </BbCard>
+        }
+    </div>
+</div>
+
+@code {
+    private const string Conversation = "conversation";
+    private const string Body = "body";
+    private const string HeadersTab = "headers";
+    private const string Reassembled = "reassembled";
+    private const string EventsView = "events";
+    private const string Raw = "raw";
+
+    private enum LoadState { Loading, Loaded, NotFound, Failed }
+
+    [Parameter] public string Id { get; set; } = "";
+
+    private string? _loadedId;
+    private LoadState _state;
+    private string? _loadError;
+    private ExchangeLog? _log;
+    private ExchangeAnalysis? _analysis;
+    private string _summaryPath = "";
+    private SegmentViewState _view = new();
+    private string? _requestTab;
+    private string? _responseTab;
+    private string? _streamView;
+    private string? _reassembledText;
+    private string? _eventsText;
+    private string? _pendingScroll;
+
+    protected override void OnInitialized() => Feed.Changed += OnFeedChanged;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        // Older/newer navigation reuses this component with a new id.
+        if (_loadedId == Id)
+        {
+            return;
+        }
+
+        _loadedId = Id;
+        _state = LoadState.Loading;
+        _log = null;
+        _analysis = null;
+        _eventsText = null;
+        _view = new SegmentViewState();
+
+        try
+        {
+            using var response = await Http.GetAsync($"api/logs/{Uri.EscapeDataString(Id)}");
+            if (response.StatusCode is System.Net.HttpStatusCode.NotFound or System.Net.HttpStatusCode.BadRequest)
+            {
+                _state = LoadState.NotFound;
+                return;
+            }
+
+            response.EnsureSuccessStatusCode();
+            await using var stream = await response.Content.ReadAsStreamAsync();
+            var log = await System.Text.Json.JsonSerializer.DeserializeAsync(stream, AiLogJsonContext.Default.ExchangeLog)
+                ?? throw new InvalidOperationException("empty log file");
+            Show(log);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or System.Text.Json.JsonException or InvalidOperationException)
+        {
+            _state = LoadState.Failed;
+            _loadError = ex.Message;
+        }
+    }
+
+    private void Show(ExchangeLog log)
+    {
+        _log = log;
+        _summaryPath = LogPath(log);
+        _analysis = ExchangeAnalysis.Analyze(log);
+        _reassembledText = _analysis.Reassembled is { } message ? Json.Format(message) : null;
+        _requestTab = _analysis.Request is not null ? Conversation : Body;
+        _responseTab = HasOutput ? Conversation : Body;
+        _streamView = _analysis.Reassembled is not null ? Reassembled : Raw;
+
+        // Top-level groups open; the last user message and the model's output fully open; everything else collapsed.
+        if (_analysis.Request is { } request)
+        {
+            foreach (var top in request.Children)
+            {
+                _view.Expanded.Add(top.Id);
+            }
+
+            var lastUser = request.Children.LastOrDefault()?.Children.LastOrDefault(m => m.Kind == SegmentKind.Message && m.Role == "user");
+            if (lastUser is not null)
+            {
+                _view.ExpandAll(lastUser);
+            }
+        }
+
+        if (_analysis.Response is { } output)
+        {
+            _view.ExpandAll(output);
+        }
+
+        _state = LoadState.Loaded;
+    }
+
+    private bool HasOutput => _analysis?.Response is { Children.Count: > 0 };
+
+    private string InputSummary => _analysis?.Usage is { InputTokens: not null } usage
+        ? $"{Display.ExactTokens(usage.InputTokens)} tokens ({Display.InputBreakdown(usage)})"
+        : "—";
+
+    private string EventsText => _eventsText ??= string.Join("\n\n", _analysis!.Events!.Select(e =>
+        $"event: {e.EventType}\n{(Json.TryParse(e.Data) is { } data ? Json.Format(data) : e.Data)}"));
+
+    private void Reveal(ContextSegment segment)
+    {
+        if (segment.Id.StartsWith(ExchangeAnalysis.RequestIdPrefix, StringComparison.Ordinal))
+        {
+            _requestTab = Conversation;
+        }
+        else
+        {
+            _responseTab = Conversation;
+        }
+
+        _view.Reveal(segment);
+        _pendingScroll = segment.Id;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_pendingScroll is { } id)
+        {
+            _pendingScroll = null;
+            await JS.InvokeVoidAsync("ailog.scrollToId", id);
+        }
+    }
+
+    /// <summary>+1 is older (further down the newest-first list), -1 newer.</summary>
+    private string? NeighbourHref(int step)
+    {
+        var items = Feed.Items;
+        for (var i = 0; i < items.Count; i++)
+        {
+            if (items[i].Id == Id)
+            {
+                var j = i + step;
+                return j >= 0 && j < items.Count ? $"exchanges/{Uri.EscapeDataString(items[j].Id)}" : null;
+            }
+        }
+
+        return null;
+    }
+
+    private static string LogPath(ExchangeLog log)
+    {
+        var prefix = "/" + log.Route;
+        return log.Request.Target.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) ? log.Request.Target[prefix.Length..] : log.Request.Target;
+    }
+
+    private void OnFeedChanged() => InvokeAsync(StateHasChanged);
+
+    public void Dispose() => Feed.Changed -= OnFeedChanged;
+}

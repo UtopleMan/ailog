@@ -14,11 +14,19 @@
 
   <ItemGroup>
     <PackageReference Include="BlazorBlueprint.Components" Version="4.1.0" />
+    <PackageReference Include="Markdig" Version="1.4.0" />
     <PackageReference Include="Microsoft.AspNetCore.Components.WebAssembly" Version="10.0.9" />
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Markdig references MemoryMarshal through the System.Memory facade; trimming drops the facade's forwarders
+         and Markdig then fails at runtime with a TypeLoadException. -->
+    <TrimmerRootAssembly Include="System.Memory" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\AiLog.Contracts\AiLog.Contracts.csproj" />
+    <ProjectReference Include="..\AiLog.Shared\AiLog.Shared.csproj" />
   </ItemGroup>
 
 </Project>

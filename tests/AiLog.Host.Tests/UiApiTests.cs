@@ -138,6 +138,66 @@ public sealed class UiApiTests
     }
 
     [Fact]
+    public async Task Detail_returns_the_log_file_as_written()
+    {
+        await using var fixture = await ProxyFixture.StartAsync();
+        var log = ForeignLog("2026-01-01T00-00-00.000Z_0001_POST_v1-messages");
+        await WriteLikeAnotherInstanceAsync(fixture.LogsPath, log);
+
+        using var response = await fixture.Client.GetAsync($"/_ailog/api/logs/{log.Id}");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("application/json", response.Content.Headers.ContentType!.MediaType);
+        Assert.Equal(await File.ReadAllBytesAsync(Path.Combine(fixture.LogsPath, log.Id + ".json")), await response.Content.ReadAsByteArrayAsync());
+        var roundTripped = JsonSerializer.Deserialize(await response.Content.ReadAsStreamAsync(), AiLogJsonContext.Default.ExchangeLog);
+        Assert.Equal(log.Id, roundTripped!.Id);
+    }
+
+    [Fact]
+    public async Task Detail_of_a_missing_log_is_not_found()
+    {
+        await using var fixture = await ProxyFixture.StartAsync();
+
+        using var response = await fixture.Client.GetAsync("/_ailog/api/logs/2026-01-01T00-00-00.000Z_0099_POST_nope");
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    [Theory]
+    [InlineData("..%2F..%2Fetc%2Fpasswd")]
+    [InlineData("..%5Csecret")]
+    [InlineData(".hidden")]
+    [InlineData("a%20b")]
+    public async Task Detail_rejects_ids_that_are_not_plain_file_names(string id)
+    {
+        await using var fixture = await ProxyFixture.StartAsync();
+
+        using var response = await fixture.Client.GetAsync($"/_ailog/api/logs/{id}");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Theory]
+    [InlineData("..")]
+    [InlineData("../x")]
+    [InlineData("a/b")]
+    [InlineData("a\\b")]
+    [InlineData("")]
+    public void Log_ids_cannot_leave_the_logs_folder(string id) =>
+        Assert.Null(UiEndpoints.ResolveLogFile(Path.GetTempPath(), id));
+
+    [Fact]
+    public async Task Exchange_pages_serve_the_app_shell_even_though_ids_contain_a_dot()
+    {
+        await using var fixture = await ProxyFixture.StartAsync();
+
+        using var page = await fixture.Client.GetAsync("/_ailog/exchanges/2026-10-08T14-23-05.123Z_0001_POST_v1-messages");
+
+        Assert.Equal(HttpStatusCode.OK, page.StatusCode);
+        Assert.Contains("<base href=\"/_ailog/\"", await page.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
     public void A_proxy_route_named_after_the_ui_prefix_is_refused()
     {
         var error = Assert.Throws<InvalidOperationException>(() =>

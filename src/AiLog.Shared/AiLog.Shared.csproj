@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Logic shared by the host (native AOT) and the WASM client (trimmed): provider adapters, SSE reassembly,
+       context analysis. Reflection-free; JSON only via JsonDocument / JsonNode or source-gen contexts. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsAotCompatible>true</IsAotCompatible>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\AiLog.Contracts\AiLog.Contracts.csproj" />
+  </ItemGroup>
+
+</Project>

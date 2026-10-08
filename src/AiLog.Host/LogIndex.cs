@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Threading.Channels;
 using AiLog.Contracts;
+using AiLog.Shared.Providers;
 
 namespace AiLog.Host;
 
@@ -92,7 +93,7 @@ internal sealed class LogIndex : IDisposable
             Outcome = log.Outcome,
             RequestBytes = log.Request.Body?.SizeBytes ?? 0,
             ResponseBytes = log.Response?.Body?.SizeBytes ?? 0,
-            Usage = TokenUsageExtractor.Extract(log.Response),
+            Usage = ProviderRegistry.ExtractUsage(log),
         };
     }
 

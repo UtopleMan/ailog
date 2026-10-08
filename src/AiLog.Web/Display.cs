@@ -4,7 +4,7 @@ using BlazorBlueprint.Components;
 
 namespace AiLog.Web;
 
-/// <summary>Formatting for grid cells.</summary>
+/// <summary>Formatting for grid cells and the detail page.</summary>
 public static class Display
 {
     private static readonly CultureInfo Culture = CultureInfo.InvariantCulture;
@@ -68,7 +68,9 @@ public static class Display
 
     public static string Status(int? statusCode) => statusCode?.ToString(Culture) ?? "ERR";
 
-    public static BadgeVariant StatusVariant(ExchangeSummary s) => s.StatusCode switch
+    public static BadgeVariant StatusVariant(ExchangeSummary s) => StatusVariant(s.StatusCode);
+
+    public static BadgeVariant StatusVariant(int? statusCode) => statusCode switch
     {
         null => BadgeVariant.SoftDestructive,
         >= 500 => BadgeVariant.SoftDestructive,

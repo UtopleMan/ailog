@@ -2,6 +2,7 @@
   <Folder Name="/src/">
     <Project Path="src/AiLog.Contracts/AiLog.Contracts.csproj" />
     <Project Path="src/AiLog.Host/AiLog.Host.csproj" />
+    <Project Path="src/AiLog.Shared/AiLog.Shared.csproj" />
     <Project Path="src/AiLog.Web/AiLog.Web.csproj" />
   </Folder>
   <Folder Name="/tests/">

@@ -1,0 +1,65 @@
+@page "/"
+@implements IDisposable
+@inject LogFeed Feed
+
+<PageTitle>ailog</PageTitle>
+
+<div class="grid-scroll">
+    <BbDataGrid TData="ExchangeSummary" Items="Feed.Items" ItemKey="@(s => s.Id)"
+                Virtualize="true" ShowPagination="false" StickyHeader="true">
+        <Columns>
+            <BbDataGridTemplateColumn Title="Time" Width="120px" Context="s">
+                <span class="mono" title="@Display.FullTime(s.StartedAt)">@Display.Time(s.StartedAt)</span>
+            </BbDataGridTemplateColumn>
+            <BbDataGridTemplateColumn Title="#" Width="70px" CellClass="num" HeaderClass="num" Context="s">
+                <span class="mono">@s.Sequence</span>
+            </BbDataGridTemplateColumn>
+            <BbDataGridTemplateColumn Title="Method" Width="90px" Context="s">
+                <span class="mono">@s.Method</span>
+            </BbDataGridTemplateColumn>
+            <BbDataGridTemplateColumn Title="Route" Width="110px" Context="s">
+                @s.Route
+            </BbDataGridTemplateColumn>
+            <BbDataGridTemplateColumn Title="Path" NoWrap="true" Context="s">
+                <span class="mono" title="@s.Path">@s.Path</span>
+            </BbDataGridTemplateColumn>
+            <BbDataGridTemplateColumn Title="Status" Width="90px" Context="s">
+                <BbBadge Variant="@Display.StatusVariant(s)">@Display.Status(s.StatusCode)</BbBadge>
+            </BbDataGridTemplateColumn>
+            <BbDataGridTemplateColumn Title="Duration" Width="100px" CellClass="num" HeaderClass="num" Context="s">
+                <span class="mono">@Display.Duration(s.DurationMs)</span>
+            </BbDataGridTemplateColumn>
+            <BbDataGridTemplateColumn Title="In" Width="80px" CellClass="num" HeaderClass="num" Context="s">
+                <span class="mono" title="@Display.InputBreakdown(s.Usage)">@Display.Tokens(s.Usage?.InputTokens)</span>
+            </BbDataGridTemplateColumn>
+            <BbDataGridTemplateColumn Title="Out" Width="80px" CellClass="num" HeaderClass="num" Context="s">
+                <span class="mono" title="@($"{Display.ExactTokens(s.Usage?.OutputTokens)} output tokens")">@Display.Tokens(s.Usage?.OutputTokens)</span>
+            </BbDataGridTemplateColumn>
+            <BbDataGridTemplateColumn Title="Size" Width="160px" CellClass="num" HeaderClass="num" Context="s">
+                <span class="mono">@Display.Bytes(s.RequestBytes) → @Display.Bytes(s.ResponseBytes)</span>
+            </BbDataGridTemplateColumn>
+            <BbDataGridTemplateColumn Title="Outcome" Width="130px" Context="s">
+                @if (Display.Outcome(s.Outcome) is { } outcome)
+                {
+                    <BbBadge Variant="BadgeVariant.Outline">@outcome</BbBadge>
+                }
+            </BbDataGridTemplateColumn>
+        </Columns>
+        <EmptyTemplate>
+            <p class="notice">No requests logged yet. Point your harness at this ailog instance, e.g. <code>ANTHROPIC_BASE_URL=@ProxyExample</code>.</p>
+        </EmptyTemplate>
+    </BbDataGrid>
+</div>
+
+@code {
+    [Inject] private NavigationManager Navigation { get; set; } = null!;
+
+    // The UI lives at /_ailog/, proxy routes sit next to it at the root.
+    private string ProxyExample => new Uri(new Uri(Navigation.BaseUri), "/anthropic").ToString();
+
+    protected override void OnInitialized() => Feed.Changed += OnFeedChanged;
+
+    private void OnFeedChanged() => InvokeAsync(StateHasChanged);
+
+    public void Dispose() => Feed.Changed -= OnFeedChanged;
+}

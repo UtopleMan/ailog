@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk.BlazorWebAssembly">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!-- Placeholder rewriting drops index.html when this app is published through AiLog.Host (SDK 10.0.301),
+         so index.html is a plain static asset and references the unfingerprinted boot script. -->
+    <OverrideHtmlAssetPlaceholders>false</OverrideHtmlAssetPlaceholders>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- Served by ailog under /_ailog/ so the UI never collides with proxy routes. -->
+    <StaticWebAssetBasePath>_ailog</StaticWebAssetBasePath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="BlazorBlueprint.Components" Version="4.1.0" />
+    <PackageReference Include="Microsoft.AspNetCore.Components.WebAssembly" Version="10.0.9" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\AiLog.Contracts\AiLog.Contracts.csproj" />
+  </ItemGroup>
+
+</Project>

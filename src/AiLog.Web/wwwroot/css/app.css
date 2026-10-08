@@ -1,0 +1,112 @@
+/* Layout only; component styling comes from blazorblueprint.css and its theme variables. */
+html, body {
+    margin: 0;
+    height: 100%;
+    background: var(--background);
+    color: var(--foreground);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    font-size: 14px;
+}
+
+.shell {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+}
+
+.topbar {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    padding: 0.5rem 1rem;
+    border-bottom: 1px solid var(--border);
+}
+
+.brand {
+    font-weight: 600;
+    font-size: 1rem;
+}
+
+.count {
+    color: var(--muted-foreground);
+}
+
+.spacer {
+    flex: 1;
+}
+
+.feed-state {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    color: var(--muted-foreground);
+}
+
+.feed-state .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #a1a1aa;
+}
+
+.feed-state.live .dot {
+    background: #22c55e;
+}
+
+.feed-state.reconnecting .dot {
+    background: #f59e0b;
+    animation: pulse 1s ease-in-out infinite alternate;
+}
+
+@keyframes pulse {
+    to { opacity: 0.3; }
+}
+
+.content {
+    flex: 1;
+    min-height: 0;
+}
+
+/* Virtualization needs a fixed-height scroll container around the grid. */
+.grid-scroll {
+    height: 100%;
+    overflow: auto;
+}
+
+.mono {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.85em;
+}
+
+.num {
+    text-align: right;
+}
+
+th.num > div {
+    justify-content: flex-end;
+}
+
+.notice {
+    padding: 1rem;
+    color: var(--muted-foreground);
+}
+
+#blazor-error-ui {
+    display: none;
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    width: 100%;
+    padding: 0.6rem 1.25rem;
+    background: lightyellow;
+    color: black;
+    box-shadow: 0 -1px 2px rgba(0, 0, 0, 0.2);
+    z-index: 1000;
+}
+
+#blazor-error-ui .dismiss {
+    cursor: pointer;
+    position: absolute;
+    right: 0.75rem;
+    top: 0.5rem;
+}

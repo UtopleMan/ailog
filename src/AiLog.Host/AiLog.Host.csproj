@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>ailog</AssemblyName>
+    <RootNamespace>AiLog.Host</RootNamespace>
+    <PublishAot>true</PublishAot>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <EnableConfigurationBindingGenerator>true</EnableConfigurationBindingGenerator>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\AiLog.Contracts\AiLog.Contracts.csproj" />
+    <!-- For its static web assets (the WASM app and its package content); the host never loads the assembly. -->
+    <ProjectReference Include="..\AiLog.Web\AiLog.Web.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- A logs folder from running in the project directory must never be published as content. -->
+    <Content Remove="logs/**" />
+    <None Remove="logs/**" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="AiLog.Host.Tests" />
+  </ItemGroup>
+
+</Project>

@@ -83,8 +83,9 @@ public sealed class LogFeed(HttpClient http) : IAsyncDisposable
         {
             // Disposed: stopping is not a failure.
         }
-        catch (Exception ex) when (ex is HttpRequestException or IOException or JsonException or OperationCanceledException)
+        catch (Exception ex)
         {
+            // Deliberately broad: whatever broke the stream, the feed must keep reconnecting rather than die silently.
             Console.WriteLine($"ailog: event stream failed: {ex.Message}");
         }
     }

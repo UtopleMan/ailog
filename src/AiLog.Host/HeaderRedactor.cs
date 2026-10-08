@@ -11,12 +11,23 @@ internal sealed class HeaderRedactor(IEnumerable<string> redactedNames)
 
     private readonly HashSet<string> redacted = new(redactedNames, StringComparer.OrdinalIgnoreCase);
 
-    /// <summary>Adds the header to <paramref name="target"/>, appending to any values already captured under that name.</summary>
-    public void Add(Dictionary<string, string> target, string name, IEnumerable<string?> values)
+    /// <summary>Copies the headers into a log-ready dictionary, joining repeated names and masking redacted values.</summary>
+    public Dictionary<string, string> Capture(IEnumerable<(string Name, IEnumerable<string?> Values)> headers)
+    {
+        Dictionary<string, string> captured = new(StringComparer.OrdinalIgnoreCase);
+        foreach ((string name, IEnumerable<string?> values) in headers)
+        {
+            string joined = JoinValues(name, values);
+            captured[name] = captured.TryGetValue(name, out string? existing) ? existing + ValueSeparator + joined : joined;
+        }
+
+        return captured;
+    }
+
+    private string JoinValues(string name, IEnumerable<string?> values)
     {
         bool isRedacted = redacted.Contains(name);
-        string joined = string.Join(ValueSeparator, values.Select(value => isRedacted ? Mask(value ?? "") : value));
-        target[name] = target.TryGetValue(name, out string? existing) ? existing + ValueSeparator + joined : joined;
+        return string.Join(ValueSeparator, values.Select(value => isRedacted ? Mask(value ?? "") : value));
     }
 
     /// <summary>"Bearer sk-ant-api03-abcdef...wxyz" becomes "Bearer sk-ant…wxyz".</summary>

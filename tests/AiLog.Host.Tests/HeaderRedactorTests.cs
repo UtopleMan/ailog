@@ -12,11 +12,13 @@ public sealed class HeaderRedactorTests
     [Fact]
     public void Only_configured_headers_are_redacted()
     {
-        var redactor = new HeaderRedactor(["x-api-key"]);
-        var captured = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        HeaderRedactor redactor = new(["x-api-key"]);
 
-        redactor.Add(captured, "X-Api-Key", ["sk-ant-api03-abcdefghijklmnop-wxyz"]);
-        redactor.Add(captured, "anthropic-version", ["2023-06-01"]);
+        Dictionary<string, string> captured = redactor.Capture(
+        [
+            ("X-Api-Key", ["sk-ant-api03-abcdefghijklmnop-wxyz"]),
+            ("anthropic-version", ["2023-06-01"]),
+        ]);
 
         Assert.Equal("sk-ant…wxyz", captured["x-api-key"]);
         Assert.Equal("2023-06-01", captured["anthropic-version"]);

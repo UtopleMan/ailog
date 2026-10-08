@@ -262,7 +262,7 @@ internal sealed class ProxyHandler(
         {
             Method = request.Method,
             Target = exchange.Target,
-            Headers = CaptureHeaders(request.Headers),
+            Headers = redactor.Capture(HeaderPairs(request.Headers)),
             Body = BodyDecoder.Decode(
                 new CapturedBody(CapturedBytes(exchange.RequestCapture), request.ContentType, request.Headers.ContentEncoding)),
         };
@@ -274,7 +274,7 @@ internal sealed class ProxyHandler(
         return new LoggedResponse
         {
             StatusCode = (int)upstream.StatusCode,
-            Headers = CaptureHeaders(upstream),
+            Headers = redactor.Capture(HeaderPairs(upstream)),
             Body = BodyDecoder.Decode(new CapturedBody(
                 CapturedBytes(capture),
                 upstream.Content.Headers.ContentType?.ToString(),
@@ -285,27 +285,11 @@ internal sealed class ProxyHandler(
     private static ReadOnlyMemory<byte> CapturedBytes(MemoryStream capture) =>
         capture.GetBuffer().AsMemory(0, (int)capture.Length);
 
-    private Dictionary<string, string> CaptureHeaders(IHeaderDictionary headers)
-    {
-        Dictionary<string, string> captured = new(StringComparer.OrdinalIgnoreCase);
-        foreach (var (name, values) in headers)
-        {
-            redactor.Add(captured, name, values);
-        }
+    private static IEnumerable<(string Name, IEnumerable<string?> Values)> HeaderPairs(IHeaderDictionary headers) =>
+        headers.Select(header => (header.Key, (IEnumerable<string?>)header.Value));
 
-        return captured;
-    }
-
-    private Dictionary<string, string> CaptureHeaders(HttpResponseMessage response)
-    {
-        Dictionary<string, string> captured = new(StringComparer.OrdinalIgnoreCase);
-        foreach (var (name, values) in response.Headers.Concat(response.Content.Headers))
-        {
-            redactor.Add(captured, name, values);
-        }
-
-        return captured;
-    }
+    private static IEnumerable<(string Name, IEnumerable<string?> Values)> HeaderPairs(HttpResponseMessage response) =>
+        response.Headers.Concat(response.Content.Headers).Select(header => (header.Key, (IEnumerable<string?>)header.Value));
 
     /// <summary>The route prefix of the request target and the upstream it maps to.</summary>
     private sealed record RouteMatch(string Name, string UpstreamBase, string UpstreamPath)

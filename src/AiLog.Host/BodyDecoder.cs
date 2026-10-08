@@ -5,85 +5,63 @@ using AiLog.Contracts;
 
 namespace AiLog.Host;
 
+/// <summary>Body bytes exactly as they crossed the wire, with the headers needed to decode them.</summary>
+internal sealed record CapturedBody(ReadOnlyMemory<byte> Wire, string? ContentType, string? ContentEncoding);
+
 /// <summary>Turns captured wire bytes into a readable <see cref="LoggedBody"/>.</summary>
 internal static class BodyDecoder
 {
+    private const string IdentityEncoding = "identity";
+    private const string JsonNotParsedNote = "Content-Type is JSON but the body did not parse; stored as text.";
+
     private static readonly UTF8Encoding StrictUtf8 = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
 
-    public static LoggedBody? Decode(ReadOnlySpan<byte> wire, string? contentType, string? contentEncoding)
+    public static LoggedBody? Decode(CapturedBody body)
     {
-        if (wire.IsEmpty)
+        if (body.Wire.IsEmpty)
         {
             return null;
         }
 
-        string? note = null;
-        var bytes = wire.ToArray();
-        if (!string.IsNullOrWhiteSpace(contentEncoding) && !contentEncoding.Equals("identity", StringComparison.OrdinalIgnoreCase))
-        {
-            try
-            {
-                bytes = Decompress(bytes, contentEncoding.Trim());
-            }
-            catch (Exception ex) when (ex is InvalidDataException or IOException or NotSupportedException)
-            {
-                note = $"Could not decode content-encoding '{contentEncoding}': {ex.Message}";
-                return Build(BodyFormat.Base64, wire.ToArray(), wire.Length, contentEncoding, note);
-            }
-        }
-
-        string text;
-        try
-        {
-            text = StrictUtf8.GetString(bytes);
-        }
-        catch (DecoderFallbackException)
-        {
-            return Build(BodyFormat.Base64, bytes, wire.Length, contentEncoding, note);
-        }
-
-        if (contentType?.Contains("json", StringComparison.OrdinalIgnoreCase) == true)
-        {
-            try
-            {
-                using var document = JsonDocument.Parse(bytes);
-                return new LoggedBody
-                {
-                    Format = BodyFormat.Json,
-                    SizeBytes = wire.Length,
-                    ContentEncoding = contentEncoding,
-                    Note = note,
-                    Content = document.RootElement.Clone(),
-                };
-            }
-            catch (JsonException)
-            {
-                note = "Content-Type is JSON but the body did not parse; stored as text.";
-            }
-        }
+        DecodedContent decoded = body.ContentEncoding is { } encoding && IsContentEncoded(encoding)
+            ? DecodeEncoded(body, encoding)
+            : DecodeContent(body.Wire.ToArray(), body.ContentType);
 
         return new LoggedBody
         {
-            Format = BodyFormat.Text,
-            SizeBytes = wire.Length,
-            ContentEncoding = contentEncoding,
-            Note = note,
-            Content = JsonSerializer.SerializeToElement(text, AiLogJsonContext.Default.String),
+            Format = decoded.Format,
+            SizeBytes = body.Wire.Length,
+            ContentEncoding = body.ContentEncoding,
+            Note = decoded.Note,
+            Content = decoded.Content,
         };
     }
 
-    private static LoggedBody Build(BodyFormat format, byte[] bytes, long size, string? encoding, string? note) => new()
+    private static bool IsContentEncoded(string encoding) =>
+        !string.IsNullOrWhiteSpace(encoding) && !encoding.Equals(IdentityEncoding, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Falls back to the raw wire bytes as base64 when the content-encoding cannot be undone.</summary>
+    private static DecodedContent DecodeEncoded(CapturedBody body, string encoding)
     {
-        Format = format,
-        SizeBytes = size,
-        ContentEncoding = encoding,
-        Note = note,
-        Content = JsonSerializer.SerializeToElement(Convert.ToBase64String(bytes), AiLogJsonContext.Default.String),
-    };
+        byte[] decompressed;
+        try
+        {
+            decompressed = Decompress(body.Wire.ToArray(), encoding.Trim());
+        }
+        catch (Exception ex) when (ex is InvalidDataException or IOException or NotSupportedException)
+        {
+            return DecodedContent.Base64(body.Wire.ToArray()) with
+            {
+                Note = $"Could not decode content-encoding '{encoding}': {ex.Message}",
+            };
+        }
+
+        return DecodeContent(decompressed, body.ContentType);
+    }
 
     private static byte[] Decompress(byte[] data, string encoding)
     {
-        using var input = new MemoryStream(data);
+        using MemoryStream input = new(data);
         using Stream decoder = encoding.ToLowerInvariant() switch
         {
             "gzip" or "x-gzip" => new GZipStream(input, CompressionMode.Decompress),
@@ -91,8 +69,60 @@ internal static class BodyDecoder
             "deflate" => new ZLibStream(input, CompressionMode.Decompress),
             _ => throw new NotSupportedException($"Unsupported content-encoding '{encoding}'."),
         };
-        using var output = new MemoryStream();
+        using MemoryStream output = new();
         decoder.CopyTo(output);
         return output.ToArray();
+    }
+
+    private static DecodedContent DecodeContent(byte[] bytes, string? contentType)
+    {
+        if (TryDecodeUtf8(bytes) is not { } text)
+        {
+            return DecodedContent.Base64(bytes);
+        }
+
+        if (!IsJson(contentType))
+        {
+            return DecodedContent.Text(text);
+        }
+
+        return TryParseJson(bytes) ?? DecodedContent.Text(text) with { Note = JsonNotParsedNote };
+    }
+
+    private static string? TryDecodeUtf8(byte[] bytes)
+    {
+        try
+        {
+            return StrictUtf8.GetString(bytes);
+        }
+        catch (DecoderFallbackException)
+        {
+            return null;
+        }
+    }
+
+    private static bool IsJson(string? contentType) =>
+        contentType?.Contains("json", StringComparison.OrdinalIgnoreCase) == true;
+
+    private static DecodedContent? TryParseJson(byte[] bytes)
+    {
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(bytes);
+            return new DecodedContent(BodyFormat.Json, document.RootElement.Clone());
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private sealed record DecodedContent(BodyFormat Format, JsonElement Content, string? Note = null)
+    {
+        public static DecodedContent Text(string text) =>
+            new(BodyFormat.Text, JsonSerializer.SerializeToElement(text, AiLogJsonContext.Default.String));
+
+        public static DecodedContent Base64(byte[] bytes) =>
+            new(BodyFormat.Base64, JsonSerializer.SerializeToElement(Convert.ToBase64String(bytes), AiLogJsonContext.Default.String));
     }
 }

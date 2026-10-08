@@ -12,74 +12,56 @@ namespace AiLog.Host;
 /// </summary>
 internal sealed class LogIndex : IDisposable
 {
-    private readonly string _directory;
-    private readonly ConcurrentDictionary<string, ExchangeSummary> _items = new(StringComparer.Ordinal);
-    private readonly Lock _subscribersLock = new();
-    private readonly List<Channel<ExchangeSummary>> _subscribers = [];
-    private readonly FileSystemWatcher _watcher;
-    private readonly Task _initialScan;
+    private const string LogFilePattern = "*.json";
+    private const string LogFileExtension = ".json";
+    private const int MaxLoadAttempts = 5;
+    private const int RetryDelayStepMs = 50;
+
+    private readonly string directory;
+    private readonly ConcurrentDictionary<string, ExchangeSummary> items = new(StringComparer.Ordinal);
+    private readonly Lock subscribersLock = new();
+    private readonly List<Channel<ExchangeSummary>> subscribers = [];
+    private readonly FileSystemWatcher watcher;
+    private readonly Task initialScan;
 
     public LogIndex(AiLogOptions options)
     {
-        _directory = options.LogsPath;
-        Directory.CreateDirectory(_directory);
+        directory = options.LogsPath;
+        Directory.CreateDirectory(directory);
 
         // Start watching before scanning so a file written during the scan is not missed; the dictionary de-duplicates.
-        _watcher = new FileSystemWatcher(_directory)
-        {
-            NotifyFilter = NotifyFilters.FileName,
-            IncludeSubdirectories = false,
-        };
-        _watcher.Created += (_, e) => OnFileAppeared(e.FullPath);
-        _watcher.Renamed += (_, e) => OnFileAppeared(e.FullPath); // the writer renames *.json.tmp to *.json
-        _watcher.Deleted += (_, e) => _items.TryRemove(Path.GetFileNameWithoutExtension(e.FullPath), out ExchangeSummary? _);
-        _watcher.Error += (_, _) => Task.Run(Scan); // buffer overflow: catch up from disk
-        _watcher.EnableRaisingEvents = true;
-
-        _initialScan = Task.Run(Scan);
+        watcher = CreateWatcher();
+        initialScan = Task.Run(Scan);
     }
 
     /// <summary>All known exchanges, newest first.</summary>
-    public async Task<List<ExchangeSummary>> GetAllAsync()
+    public async Task<List<ExchangeSummary>> GetAllAsync(CancellationToken cancellationToken)
     {
-        await _initialScan;
-        return Newest(_items.Values);
+        await initialScan.WaitAsync(cancellationToken);
+        return Newest(items.Values);
     }
 
-    public static List<ExchangeSummary> Newest(IEnumerable<ExchangeSummary> items) =>
-        items.OrderByDescending(s => s.StartedAt).ThenByDescending(s => s.Sequence).ThenByDescending(s => s.Id, StringComparer.Ordinal).ToList();
+    public static List<ExchangeSummary> Newest(IEnumerable<ExchangeSummary> summaries) =>
+        summaries
+            .OrderByDescending(summary => summary.StartedAt)
+            .ThenByDescending(summary => summary.Sequence)
+            .ThenByDescending(summary => summary.Id, StringComparer.Ordinal)
+            .ToList();
 
     /// <summary>Receives every exchange added to the index from now on until disposed.</summary>
     public Subscription Subscribe()
     {
-        var channel = Channel.CreateUnbounded<ExchangeSummary>(new UnboundedChannelOptions { SingleReader = true });
-        lock (_subscribersLock)
+        Channel<ExchangeSummary> channel = Channel.CreateUnbounded<ExchangeSummary>(new UnboundedChannelOptions { SingleReader = true });
+        lock (subscribersLock)
         {
-            _subscribers.Add(channel);
+            subscribers.Add(channel);
         }
 
-        return new Subscription(channel.Reader, () =>
-        {
-            lock (_subscribersLock)
-            {
-                _subscribers.Remove(channel);
-            }
-
-            channel.Writer.TryComplete();
-        });
+        return new Subscription(channel.Reader, () => Unsubscribe(channel));
     }
 
     public static ExchangeSummary Summarize(ExchangeLog log)
     {
-        var prefix = "/" + log.Route;
-        var path = log.Request.Target.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
-            ? log.Request.Target[prefix.Length..]
-            : log.Request.Target;
-        if (!path.StartsWith('/'))
-        {
-            path = "/" + path;
-        }
-
         return new ExchangeSummary
         {
             Id = log.Id,
@@ -87,7 +69,7 @@ internal sealed class LogIndex : IDisposable
             StartedAt = log.StartedAt,
             Method = log.Request.Method,
             Route = log.Route,
-            Path = path,
+            Path = PathWithoutRoute(log),
             StatusCode = log.Response?.StatusCode,
             DurationMs = log.DurationMs,
             Outcome = log.Outcome,
@@ -97,9 +79,48 @@ internal sealed class LogIndex : IDisposable
         };
     }
 
+    public void Dispose() => watcher.Dispose();
+
+    private FileSystemWatcher CreateWatcher()
+    {
+        FileSystemWatcher created = new(directory)
+        {
+            NotifyFilter = NotifyFilters.FileName,
+            IncludeSubdirectories = false,
+        };
+        created.Created += (_, e) => OnFileAppeared(e.FullPath);
+
+        // The writer renames *.json.tmp to *.json.
+        created.Renamed += (_, e) => OnFileAppeared(e.FullPath);
+        created.Deleted += (_, e) => items.TryRemove(Path.GetFileNameWithoutExtension(e.FullPath), out ExchangeSummary? _);
+
+        // Buffer overflow: catch up from disk.
+        created.Error += (_, _) => Task.Run(Scan);
+        created.EnableRaisingEvents = true;
+        return created;
+    }
+
+    private void Unsubscribe(Channel<ExchangeSummary> channel)
+    {
+        lock (subscribersLock)
+        {
+            subscribers.Remove(channel);
+        }
+
+        channel.Writer.TryComplete();
+    }
+
+    private static string PathWithoutRoute(ExchangeLog log)
+    {
+        string target = log.Request.Target;
+        string prefix = "/" + log.Route;
+        string path = target.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) ? target[prefix.Length..] : target;
+        return path.StartsWith('/') ? path : "/" + path;
+    }
+
     private void Scan()
     {
-        foreach (var path in Directory.EnumerateFiles(_directory, "*.json"))
+        foreach (string path in Directory.EnumerateFiles(directory, LogFilePattern))
         {
             OnFileAppeared(path);
         }
@@ -107,43 +128,37 @@ internal sealed class LogIndex : IDisposable
 
     private void OnFileAppeared(string path)
     {
-        if (!path.EndsWith(".json", StringComparison.OrdinalIgnoreCase) || _items.ContainsKey(Path.GetFileNameWithoutExtension(path)))
+        if (!path.EndsWith(LogFileExtension, StringComparison.OrdinalIgnoreCase) || items.ContainsKey(Path.GetFileNameWithoutExtension(path)))
         {
             return;
         }
 
-        var summary = TryLoad(path);
-        if (summary is null || !_items.TryAdd(summary.Id, summary))
+        ExchangeSummary? summary = TryLoad(path);
+        if (summary is null || !items.TryAdd(summary.Id, summary))
         {
             return;
         }
 
-        lock (_subscribersLock)
-        {
-            foreach (var subscriber in _subscribers)
-            {
-                subscriber.Writer.TryWrite(summary);
-            }
-        }
+        Publish(summary);
     }
 
     private static ExchangeSummary? TryLoad(string path)
     {
-        for (var attempt = 1; ; attempt++)
+        for (int attempt = 1; ; attempt++)
         {
             try
             {
-                var log = JsonSerializer.Deserialize(File.ReadAllBytes(path), AiLogJsonContext.Default.ExchangeLog);
+                ExchangeLog? log = JsonSerializer.Deserialize(File.ReadAllBytes(path), AiLogJsonContext.Default.ExchangeLog);
                 return log is null ? null : Summarize(log);
             }
             catch (FileNotFoundException)
             {
                 return null;
             }
-            catch (IOException) when (attempt < 5)
+            catch (IOException) when (attempt < MaxLoadAttempts)
             {
                 // Another process may still hold the file (e.g. copied in by hand); give it a moment.
-                Thread.Sleep(50 * attempt);
+                Thread.Sleep(RetryDelayStepMs * attempt);
             }
             catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
             {
@@ -153,8 +168,18 @@ internal sealed class LogIndex : IDisposable
         }
     }
 
-    public void Dispose() => _watcher.Dispose();
+    private void Publish(ExchangeSummary summary)
+    {
+        lock (subscribersLock)
+        {
+            foreach (Channel<ExchangeSummary> subscriber in subscribers)
+            {
+                subscriber.Writer.TryWrite(summary);
+            }
+        }
+    }
 
+    /// <summary>A live feed of newly indexed exchanges; dispose to stop receiving.</summary>
     public sealed class Subscription(ChannelReader<ExchangeSummary> reader, Action unsubscribe) : IDisposable
     {
         public ChannelReader<ExchangeSummary> Reader { get; } = reader;

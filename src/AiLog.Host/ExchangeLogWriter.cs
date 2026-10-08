@@ -10,6 +10,11 @@ namespace AiLog.Host;
 internal sealed class ExchangeLogWriter
 {
     private const int MaxPathSlugLength = 80;
+    private const string IdTimestampFormat = "yyyy-MM-dd'T'HH-mm-ss.fff'Z'";
+    private const string MissingStatus = "ERR";
+    private const string EmptySlug = "root";
+    private const char SlugSeparator = '-';
+    private const double MillisecondsPerSecond = 1000;
 
     // Keep SSE text and prompts readable instead of \u-escaping quotes, '<', '+' and non-ASCII characters.
     private static readonly AiLogJsonContext Json = new(new JsonSerializerOptions(AiLogJsonContext.Default.Options)
@@ -17,39 +22,49 @@ internal sealed class ExchangeLogWriter
         Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
     });
 
-    private readonly string _directory;
-    private long _sequence;
+    private readonly string directory;
+    private long sequence;
 
     public ExchangeLogWriter(AiLogOptions options)
     {
-        _directory = options.LogsPath;
-        Directory.CreateDirectory(_directory);
+        directory = options.LogsPath;
+        Directory.CreateDirectory(directory);
     }
 
-    public long NextSequence() => Interlocked.Increment(ref _sequence);
+    public long NextSequence() => Interlocked.Increment(ref sequence);
 
     /// <summary>e.g. 2026-10-08T14-23-05.123Z_0001_POST_v1-messages</summary>
     public static string BuildId(DateTimeOffset startedAt, long sequence, string method, string upstreamPath)
     {
-        var timestamp = startedAt.UtcDateTime.ToString("yyyy-MM-dd'T'HH-mm-ss.fff'Z'", CultureInfo.InvariantCulture);
+        string timestamp = startedAt.UtcDateTime.ToString(IdTimestampFormat, CultureInfo.InvariantCulture);
         return $"{timestamp}_{sequence:D4}_{method.ToUpperInvariant()}_{Slug(upstreamPath)}";
     }
 
-    public async Task WriteAsync(ExchangeLog entry)
+    public async Task WriteAsync(ExchangeLog entry, CancellationToken cancellationToken)
     {
-        var bytes = JsonSerializer.SerializeToUtf8Bytes(entry, Json.ExchangeLog);
-        var path = Path.Combine(_directory, entry.Id + ".json");
-        var temp = path + ".tmp";
+        await SaveAsync(entry, cancellationToken);
+        PrintSummary(entry);
+    }
 
-        // Write-then-rename so readers (e.g. the future UI) never see a half-written file.
-        await File.WriteAllBytesAsync(temp, bytes);
+    /// <summary>Write-then-rename so readers (e.g. the UI) never see a half-written file.</summary>
+    private async Task SaveAsync(ExchangeLog entry, CancellationToken cancellationToken)
+    {
+        byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(entry, Json.ExchangeLog);
+        string path = Path.Combine(directory, entry.Id + ".json");
+        string temp = path + ".tmp";
+
+        await File.WriteAllBytesAsync(temp, bytes, cancellationToken);
         File.Move(temp, path, overwrite: true);
+    }
 
-        var status = entry.Response?.StatusCode.ToString(CultureInfo.InvariantCulture) ?? "ERR";
-        var outcome = entry.Outcome == ExchangeOutcome.Completed ? "" : $" [{OutcomeName(entry.Outcome)}]";
-        var target = entry.Request.Target.Split('?', 2)[0];
+    private static void PrintSummary(ExchangeLog entry)
+    {
+        string status = entry.Response?.StatusCode.ToString(CultureInfo.InvariantCulture) ?? MissingStatus;
+        string outcome = entry.Outcome == ExchangeOutcome.Completed ? "" : $" [{OutcomeName(entry.Outcome)}]";
+        string target = entry.Request.Target.Split('?', 2)[0];
+        double seconds = entry.DurationMs / MillisecondsPerSecond;
         Console.WriteLine(
-            $"{entry.StartedAt.ToLocalTime():HH:mm:ss} {entry.Request.Method} {target} → {status} ({entry.DurationMs / 1000:0.0}s) {entry.Id}.json{outcome}");
+            $"{entry.StartedAt.ToLocalTime():HH:mm:ss} {entry.Request.Method} {target} → {status} ({seconds:0.0}s) {entry.Id}.json{outcome}");
     }
 
     private static string OutcomeName(ExchangeOutcome outcome) => outcome switch
@@ -59,25 +74,26 @@ internal sealed class ExchangeLogWriter
         _ => "completed",
     };
 
+    /// <summary>File-name-safe form of the path: runs of other characters collapse to a single '-'.</summary>
     private static string Slug(string upstreamPath)
     {
-        var path = upstreamPath.Split('?', 2)[0].Trim('/');
-        var slug = new StringBuilder(path.Length);
-        foreach (var c in path)
+        string path = upstreamPath.Split('?', 2)[0].Trim('/');
+        StringBuilder slug = new(path.Length);
+        foreach (char c in path)
         {
-            var safe = char.IsAsciiLetterOrDigit(c) || c is '.' or '_' ? c : '-';
-            if (safe != '-' || (slug.Length > 0 && slug[^1] != '-'))
+            char safe = char.IsAsciiLetterOrDigit(c) || c is '.' or '_' ? c : SlugSeparator;
+            if (safe != SlugSeparator || (slug.Length > 0 && slug[^1] != SlugSeparator))
             {
                 slug.Append(safe);
             }
         }
 
-        var result = slug.ToString().Trim('-');
+        string result = slug.ToString().Trim(SlugSeparator);
         if (result.Length > MaxPathSlugLength)
         {
-            result = result[..MaxPathSlugLength].TrimEnd('-');
+            result = result[..MaxPathSlugLength].TrimEnd(SlugSeparator);
         }
 
-        return result.Length == 0 ? "root" : result;
+        return result.Length == 0 ? EmptySlug : result;
     }
 }

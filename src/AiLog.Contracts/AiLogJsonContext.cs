@@ -2,6 +2,7 @@ using System.Text.Json.Serialization;
 
 namespace AiLog.Contracts;
 
+/// <summary>Indented JSON for the exchange log files on disk.</summary>
 [JsonSourceGenerationOptions(
     WriteIndented = true,
     PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,

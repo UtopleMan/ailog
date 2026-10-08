@@ -1,4 +1,4 @@
 using AiLog.Host;
 
-var app = AiLogApp.Build(args);
+WebApplication app = AiLogApp.Build(args);
 app.Run();

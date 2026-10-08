@@ -3,40 +3,55 @@ namespace AiLog.Host;
 /// <summary>Builds the header dictionaries written to log files, masking secrets. Never used for forwarding.</summary>
 internal sealed class HeaderRedactor(IEnumerable<string> redactedNames)
 {
-    private readonly HashSet<string> _redacted = new(redactedNames, StringComparer.OrdinalIgnoreCase);
+    private const string ValueSeparator = ", ";
+    private const string Ellipsis = "…";
+    private const int MaxFullyMaskedLength = 12;
+    private const int RevealedPrefixLength = 6;
+    private const int RevealedSuffixLength = 4;
 
+    private readonly HashSet<string> redacted = new(redactedNames, StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Adds the header to <paramref name="target"/>, appending to any values already captured under that name.</summary>
     public void Add(Dictionary<string, string> target, string name, IEnumerable<string?> values)
     {
-        var redact = _redacted.Contains(name);
-        var joined = string.Join(", ", values.Select(v => redact ? Mask(v ?? "") : v));
-        target[name] = target.TryGetValue(name, out var existing) ? existing + ", " + joined : joined;
+        bool isRedacted = redacted.Contains(name);
+        string joined = string.Join(ValueSeparator, values.Select(value => isRedacted ? Mask(value ?? "") : value));
+        target[name] = target.TryGetValue(name, out string? existing) ? existing + ValueSeparator + joined : joined;
     }
 
     /// <summary>"Bearer sk-ant-api03-abcdef...wxyz" becomes "Bearer sk-ant…wxyz".</summary>
     internal static string Mask(string value)
     {
-        var space = value.IndexOf(' ');
-        if (space > 0 && space < value.Length - 1 && value.AsSpan(0, space).ContainsOnlyLetters())
+        int space = value.IndexOf(' ');
+        if (space > 0 && space < value.Length - 1 && value.AsSpan(0, space).ContainsOnlyAsciiLetters())
         {
             return value[..space] + " " + Mask(value[(space + 1)..]);
         }
 
-        return value.Length > 12 ? $"{value[..6]}…{value[^4..]}" : "…";
+        if (value.Length <= MaxFullyMaskedLength)
+        {
+            return Ellipsis;
+        }
+
+        return $"{value[..RevealedPrefixLength]}{Ellipsis}{value[^RevealedSuffixLength..]}";
     }
 }
 
 file static class SpanExtensions
 {
-    public static bool ContainsOnlyLetters(this ReadOnlySpan<char> span)
+    extension(ReadOnlySpan<char> span)
     {
-        foreach (var c in span)
+        public bool ContainsOnlyAsciiLetters()
         {
-            if (!char.IsAsciiLetter(c))
+            foreach (char c in span)
             {
-                return false;
+                if (!char.IsAsciiLetter(c))
+                {
+                    return false;
+                }
             }
-        }
 
-        return true;
+            return true;
+        }
     }
 }

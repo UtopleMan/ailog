@@ -1,4 +1,3 @@
-using System.Text.Json;
 using AiLog.Contracts;
 using AiLog.Shared.Providers;
 
@@ -9,7 +8,7 @@ public sealed class UsageExtractionTests
     [Fact]
     public void Anthropic_json_totals_input_including_cache_reads_and_writes()
     {
-        var usage = Extract(Json("""{"type":"message","usage":{"input_tokens":1204,"cache_creation_input_tokens":100,"cache_read_input_tokens":48000,"output_tokens":356}}"""));
+        TokenUsage? usage = Extract(Json("""{"type":"message","usage":{"input_tokens":1204,"cache_creation_input_tokens":100,"cache_read_input_tokens":48000,"output_tokens":356}}"""));
 
         Assert.Equal(49304, usage!.InputTokens);
         Assert.Equal(356, usage.OutputTokens);
@@ -20,7 +19,7 @@ public sealed class UsageExtractionTests
     [Fact]
     public void Anthropic_sse_takes_input_from_message_start_and_output_from_the_last_message_delta()
     {
-        var usage = Extract(Sse("""
+        TokenUsage? usage = Extract(Sse("""
             event: message_start
             data: {"type":"message_start","message":{"id":"msg_1","usage":{"input_tokens":10,"cache_creation_input_tokens":0,"cache_read_input_tokens":5000,"output_tokens":1}}}
 
@@ -43,7 +42,7 @@ public sealed class UsageExtractionTests
     [Fact]
     public void Anthropic_message_delta_with_output_token_details_is_still_anthropic()
     {
-        var usage = Extract(Sse("""
+        TokenUsage? usage = Extract(Sse("""
             event: message_start
             data: {"type":"message_start","message":{"usage":{"input_tokens":2,"cache_creation_input_tokens":3476,"cache_read_input_tokens":35378,"output_tokens":1}}}
 
@@ -59,7 +58,7 @@ public sealed class UsageExtractionTests
     [Fact]
     public void Aborted_anthropic_stream_reports_what_arrived()
     {
-        var usage = Extract(Sse("""
+        TokenUsage? usage = Extract(Sse("""
             event: message_start
             data: {"type":"message_start","message":{"usage":{"input_tokens":20,"output_tokens":1}}}
 
@@ -72,7 +71,7 @@ public sealed class UsageExtractionTests
     [Fact]
     public void OpenAI_chat_json_prompt_tokens_already_include_cached_tokens()
     {
-        var usage = Extract(Json("""{"object":"chat.completion","usage":{"prompt_tokens":523,"completion_tokens":88,"total_tokens":611,"prompt_tokens_details":{"cached_tokens":500}}}"""));
+        TokenUsage? usage = Extract(Json("""{"object":"chat.completion","usage":{"prompt_tokens":523,"completion_tokens":88,"total_tokens":611,"prompt_tokens_details":{"cached_tokens":500}}}"""));
 
         Assert.Equal(523, usage!.InputTokens);
         Assert.Equal(88, usage.OutputTokens);
@@ -83,7 +82,7 @@ public sealed class UsageExtractionTests
     [Fact]
     public void OpenAI_chat_sse_reads_the_final_usage_chunk_and_ignores_done()
     {
-        var usage = Extract(Sse("""
+        TokenUsage? usage = Extract(Sse("""
             data: {"object":"chat.completion.chunk","choices":[{"delta":{"content":"hi"}}],"usage":null}
 
             data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":7,"completion_tokens":3}}
@@ -106,9 +105,9 @@ public sealed class UsageExtractionTests
             """)));
 
     [Fact]
-    public void OpenAI_responses_json()
+    public void OpenAI_responses_json_reports_input_output_and_cached_tokens()
     {
-        var usage = Extract(Json("""{"object":"response","usage":{"input_tokens":152000,"input_tokens_details":{"cached_tokens":150000},"output_tokens":12034,"output_tokens_details":{"reasoning_tokens":9000}}}"""));
+        TokenUsage? usage = Extract(Json("""{"object":"response","usage":{"input_tokens":152000,"input_tokens_details":{"cached_tokens":150000},"output_tokens":12034,"output_tokens_details":{"reasoning_tokens":9000}}}"""));
 
         Assert.Equal(152000, usage!.InputTokens);
         Assert.Equal(12034, usage.OutputTokens);
@@ -118,7 +117,7 @@ public sealed class UsageExtractionTests
     [Fact]
     public void OpenAI_responses_sse_reads_response_completed()
     {
-        var usage = Extract(Sse("""
+        TokenUsage? usage = Extract(Sse("""
             event: response.created
             data: {"type":"response.created","response":{"usage":null}}
 
@@ -132,25 +131,20 @@ public sealed class UsageExtractionTests
     }
 
     [Fact]
-    public void Responses_without_usage_have_none()
-    {
+    public void Json_without_usage_has_none() =>
         Assert.Null(Extract(Json("""{"error":{"type":"not_found"}}""")));
-        Assert.Null(ProviderRegistry.ExtractUsage((LoggedResponse?)null));
-        Assert.Null(ProviderRegistry.ExtractUsage(new LoggedResponse { StatusCode = 204, Headers = [] }));
-    }
 
     [Fact]
-    public void Text_that_is_not_an_event_stream_is_ignored()
-    {
-        var response = new LoggedResponse
-        {
-            StatusCode = 200,
-            Headers = new() { ["Content-Type"] = "text/plain" },
-            Body = new LoggedBody { Format = BodyFormat.Text, SizeBytes = 1, Content = JsonSerializer.SerializeToElement("""data: {"usage":{"input_tokens":1}}""", AiLogJsonContext.Default.String) },
-        };
+    public void Missing_response_has_no_usage() =>
+        Assert.Null(ProviderRegistry.ExtractUsage((LoggedResponse?)null));
 
-        Assert.Null(ProviderRegistry.ExtractUsage(response));
-    }
+    [Fact]
+    public void Response_without_body_has_no_usage() =>
+        Assert.Null(Extract(new LoggedResponse { StatusCode = 204, Headers = [] }));
+
+    [Fact]
+    public void Text_that_is_not_an_event_stream_is_ignored() =>
+        Assert.Null(Extract(Text("text/plain", """data: {"usage":{"input_tokens":1}}""")));
 
     private static TokenUsage? Extract(LoggedResponse response) => ProviderRegistry.ExtractUsage(response);
 
@@ -158,13 +152,16 @@ public sealed class UsageExtractionTests
     {
         StatusCode = 200,
         Headers = new() { ["Content-Type"] = "application/json" },
-        Body = new LoggedBody { Format = BodyFormat.Json, SizeBytes = json.Length, Content = JsonDocument.Parse(json).RootElement.Clone() },
+        Body = LoggedBodies.Json(json),
     };
 
-    private static LoggedResponse Sse(string text) => new()
+    private static LoggedResponse Sse(string text) => Text("text/event-stream; charset=utf-8", text);
+
+    private static LoggedResponse Text(string contentType, string text) => new()
     {
         StatusCode = 200,
-        Headers = new() { ["Content-Type"] = "text/event-stream; charset=utf-8" },
-        Body = new LoggedBody { Format = BodyFormat.Text, SizeBytes = text.Length, Content = JsonSerializer.SerializeToElement(text, AiLogJsonContext.Default.String) },
+        Headers = new() { ["Content-Type"] = contentType },
+        Body = LoggedBodies.Text(text),
     };
 }
+

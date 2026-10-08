@@ -1,4 +1,4 @@
-using System.Text.Json;
+using System.Buffers.Binary;
 using AiLog.Contracts;
 using AiLog.Shared;
 using AiLog.Shared.Context;
@@ -46,18 +46,29 @@ public sealed class ContextAnalysisTests
         }
         """;
 
+    private const string ClaudeCodeUsage = """{"input_tokens":100,"cache_read_input_tokens":5000,"cache_creation_input_tokens":0,"output_tokens":50}""";
+    private const long ClaudeCodeInputTokens = 100 + 5000;
+    private const string AnthropicTarget = "/anthropic/v1/messages?beta=true";
+    private const string ClaudeCliUserAgent = "claude-cli/2.1.0 (external, cli)";
+
     [Fact]
-    public void Claude_code_request_is_split_into_its_parts()
+    public void Claude_code_request_is_recognised()
     {
-        var analysis = ExchangeAnalysis.Analyze(Log(ClaudeCodeRequest, usage: """{"input_tokens":100,"cache_read_input_tokens":5000,"cache_creation_input_tokens":0,"output_tokens":50}"""));
+        ExchangeAnalysis analysis = AnalyzeClaudeCodeRequest();
 
         Assert.Equal("Anthropic Messages", analysis.Provider!.Name);
         Assert.Equal("Claude Code", analysis.Harness!.Name);
         Assert.Equal("claude-test", analysis.Model);
         Assert.Null(analysis.Error);
+    }
 
-        var items = analysis.InputBreakdown
-            .SelectMany(c => c.Items.Select(i => (c.Name, i.Label)))
+    [Fact]
+    public void Claude_code_request_is_split_into_its_parts()
+    {
+        ExchangeAnalysis analysis = AnalyzeClaudeCodeRequest();
+
+        HashSet<(string Category, string Label)> items = analysis.InputBreakdown
+            .SelectMany(category => category.Items.Select(item => (category.Name, item.Label)))
             .ToHashSet();
 
         Assert.Contains((Categories.SystemPrompt, "Billing header"), items);
@@ -80,27 +91,46 @@ public sealed class ContextAnalysisTests
         Assert.Contains((Categories.ToolCalls, "Bash"), items);
         Assert.Contains((Categories.ToolResults, "Bash"), items);
         Assert.Contains((Categories.Images, "#4 user"), items);
+    }
 
-        // The fenced "# not a heading" stays inside the Harness section.
-        var harness = analysis.Request!.Descendants().Single(s => s.Item == "Harness");
+    [Fact]
+    public void Headings_inside_code_fences_do_not_start_a_section()
+    {
+        ExchangeAnalysis analysis = AnalyzeClaudeCodeRequest();
+
+        ContextSegment harness = analysis.Request!.Descendants().Single(segment => segment.Item == "Harness");
+
         Assert.Contains("# not a heading", harness.Text);
+    }
 
-        // MCP tools are grouped per server.
-        var tools = analysis.Request.Children[1];
-        Assert.Equal(["Built-in (2)", "MCP: chrome (2)"], tools.Children.Select(c => c.Label));
+    [Fact]
+    public void Mcp_tools_are_grouped_per_server()
+    {
+        ExchangeAnalysis analysis = AnalyzeClaudeCodeRequest();
+
+        ContextSegment tools = ToolsOf(analysis.Request!);
+
+        Assert.Equal(["Built-in (2)", "MCP: chrome (2)"], tools.Children.Select(group => group.Label));
     }
 
     [Fact]
     public void Estimates_add_up_to_the_real_input_count()
     {
-        var analysis = ExchangeAnalysis.Analyze(Log(ClaudeCodeRequest, usage: """{"input_tokens":100,"cache_read_input_tokens":5000,"cache_creation_input_tokens":0,"output_tokens":50}"""));
+        ExchangeAnalysis analysis = AnalyzeClaudeCodeRequest();
 
         Assert.True(analysis.InputCalibrated);
-        Assert.Equal(5100, analysis.Request!.Tokens);
-        Assert.Equal(5100, analysis.InputBreakdown.Sum(c => c.Tokens));
+        Assert.Equal(ClaudeCodeInputTokens, analysis.Request!.Tokens);
+        Assert.Equal(ClaudeCodeInputTokens, analysis.InputBreakdown.Sum(category => category.Tokens));
+    }
 
-        // Images keep their own estimate: 200×100 px / 750.
-        var image = analysis.Request.Descendants().Single(s => s.Kind == SegmentKind.Image);
+    [Fact]
+    public void Images_keep_their_own_pixel_based_estimate()
+    {
+        ExchangeAnalysis analysis = AnalyzeClaudeCodeRequest();
+
+        ContextSegment image = analysis.Request!.Descendants().Single(segment => segment.Kind == SegmentKind.Image);
+
+        // 200×100 px / 750.
         Assert.Equal(27, image.Tokens);
         Assert.Equal("200×100 px", image.Note);
     }
@@ -108,7 +138,7 @@ public sealed class ContextAnalysisTests
     [Fact]
     public void Without_usage_tokens_fall_back_to_characters_per_token()
     {
-        var analysis = ExchangeAnalysis.Analyze(Log("""{"model":"m","messages":[{"role":"user","content":"12345678"}]}""", usage: null));
+        ExchangeAnalysis analysis = ExchangeAnalysis.Analyze(Log(new("""{"model":"m","messages":[{"role":"user","content":"12345678"}]}""")));
 
         Assert.False(analysis.InputCalibrated);
         Assert.Equal(2, analysis.Request!.Tokens);
@@ -117,20 +147,19 @@ public sealed class ContextAnalysisTests
     [Fact]
     public void Cached_prefix_runs_tools_then_system_up_to_the_last_breakpoint()
     {
-        var analysis = ExchangeAnalysis.Analyze(Log(ClaudeCodeRequest, usage: null));
-        var request = analysis.Request!;
+        ContextSegment request = AnalyzeClaudeCodeRequest(usage: null).Request!;
 
-        Assert.All(request.Children[1].Leaves(), tool => Assert.True(tool.Cached));
-        Assert.All(request.Children[0].Children, block => Assert.True(block.Cached));
-        Assert.All(request.Children[2].Descendants(), segment => Assert.False(segment.Cached));
-        Assert.Equal(2, request.Children[0].Children.Count(b => b.CacheBreakpoint));
+        Assert.All(ToolsOf(request).Leaves(), tool => Assert.True(tool.Cached));
+        Assert.All(SystemOf(request).Children, block => Assert.True(block.Cached));
+        Assert.All(MessagesOf(request).Descendants(), segment => Assert.False(segment.Cached));
+        Assert.Equal(2, SystemOf(request).Children.Count(block => block.CacheBreakpoint));
     }
 
     [Fact]
     public void Streamed_response_is_reassembled_and_its_output_estimated()
     {
-        var log = Log("""{"model":"m","messages":[{"role":"user","content":"hi"}]}""", usage: null);
-        var analysis = ExchangeAnalysis.Analyze(WithSseResponse(log, """
+        ExchangeLog log = Log(new("""{"model":"m","messages":[{"role":"user","content":"hi"}]}"""));
+        ExchangeAnalysis analysis = ExchangeAnalysis.Analyze(WithSseResponse(log, """
             event: message_start
             data: {"type":"message_start","message":{"id":"m1","content":[],"usage":{"input_tokens":12,"output_tokens":1}}}
 
@@ -148,7 +177,7 @@ public sealed class ContextAnalysisTests
         Assert.Equal(4, analysis.Events!.Count);
         Assert.Equal(12, analysis.Request!.Tokens);
         Assert.True(analysis.OutputCalibrated);
-        var output = Assert.Single(analysis.Response!.Children);
+        ContextSegment output = Assert.Single(analysis.Response!.Children);
         Assert.Equal("Hello there", output.Text);
         Assert.Equal(3, output.Tokens);
         Assert.Equal(Categories.OutputText, output.Category);
@@ -157,17 +186,17 @@ public sealed class ContextAnalysisTests
     [Fact]
     public void OpenAI_chat_request_maps_tool_results_to_their_calls()
     {
-        var analysis = ExchangeAnalysis.Analyze(Log("""
+        ExchangeAnalysis analysis = ExchangeAnalysis.Analyze(Log(new("""
             {"model":"gpt","messages":[
               {"role":"system","content":"Be brief."},
               {"role":"user","content":[{"type":"text","text":"Weather?"}]},
               {"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"Oslo\"}"}}]},
               {"role":"tool","tool_call_id":"call_1","content":"Sunny"}
             ],"tools":[{"type":"function","function":{"name":"get_weather","parameters":{}}}]}
-            """, usage: null, target: "/openai/v1/chat/completions", userAgent: "test-agent"));
+            """, "/openai/v1/chat/completions", "test-agent")));
 
         Assert.Equal("OpenAI Chat Completions", analysis.Provider!.Name);
-        var categories = analysis.InputBreakdown.ToDictionary(c => c.Name, c => c.Items.Select(i => i.Label).ToList());
+        Dictionary<string, List<string>> categories = LabelsByCategory(analysis);
         Assert.Equal(["#1 system"], categories[Categories.SystemPrompt]);
         Assert.Equal(["get_weather"], categories[Categories.ToolResults]);
         Assert.Equal(["get_weather"], categories[Categories.ToolCalls]);
@@ -177,7 +206,7 @@ public sealed class ContextAnalysisTests
     [Fact]
     public void OpenAI_responses_request_reads_instructions_and_items()
     {
-        var analysis = ExchangeAnalysis.Analyze(Log("""
+        ExchangeAnalysis analysis = ExchangeAnalysis.Analyze(Log(new("""
             {"model":"gpt","instructions":"You are Codex.","input":[
               {"type":"message","role":"developer","content":[{"type":"input_text","text":"Sandbox rules"}]},
               {"type":"message","role":"user","content":[{"type":"input_text","text":"fix it"}]},
@@ -185,10 +214,10 @@ public sealed class ContextAnalysisTests
               {"type":"function_call","name":"shell","call_id":"c1","arguments":"{\"cmd\":[\"ls\"]}"},
               {"type":"function_call_output","call_id":"c1","output":"a.txt"}
             ]}
-            """, usage: null, target: "/openai/v1/responses", userAgent: "codex_cli_rs/0.1"));
+            """, "/openai/v1/responses", "codex_cli_rs/0.1")));
 
         Assert.Equal("OpenAI Responses", analysis.Provider!.Name);
-        var categories = analysis.InputBreakdown.ToDictionary(c => c.Name, c => c.Items.Select(i => i.Label).ToList());
+        Dictionary<string, List<string>> categories = LabelsByCategory(analysis);
         Assert.Contains("#1 developer", categories[Categories.SystemPrompt]);
         Assert.Equal(["shell"], categories[Categories.ToolResults]);
         Assert.Equal(["#3 reasoning"], categories[Categories.Thinking]);
@@ -197,71 +226,91 @@ public sealed class ContextAnalysisTests
     [Fact]
     public void Unknown_exchanges_get_no_provider_view()
     {
-        var analysis = ExchangeAnalysis.Analyze(Log("""{"hello":1}""", usage: null, target: "/anthropic/api/hello"));
+        ExchangeAnalysis analysis = ExchangeAnalysis.Analyze(Log(new("""{"hello":1}""", "/anthropic/api/hello")));
 
         Assert.Null(analysis.Provider);
         Assert.Null(analysis.Request);
         Assert.Empty(analysis.InputBreakdown);
     }
 
+    // 1568×1568 is scaled down to ~1.15 MP; 4000×1000 has its long edge scaled to 1568.
     [Theory]
     [InlineData(200, 100, 27)]
-    [InlineData(1568, 1568, 1534)] // scaled to ~1.15 MP
-    [InlineData(4000, 1000, 820)] // long edge scaled to 1568
+    [InlineData(1568, 1568, 1534)]
+    [InlineData(4000, 1000, 820)]
     public void Image_tokens_follow_the_pixel_formula(int width, int height, long expected) =>
         Assert.Equal(expected, MediaEstimator.ImageTokens(width, height));
 
     [Fact]
-    public void Image_size_is_read_from_png_gif_and_jpeg_headers()
+    public void Image_size_is_read_from_a_png_header()
     {
-        Assert.True(MediaEstimator.TryReadSize(Convert.FromBase64String(Png(640, 480)), out var w, out var h));
-        Assert.Equal((640, 480), (w, h));
-
-        byte[] gif = [(byte)'G', (byte)'I', (byte)'F', (byte)'8', (byte)'9', (byte)'a', 0x20, 0x00, 0x10, 0x00];
-        Assert.True(MediaEstimator.TryReadSize(gif, out w, out h));
-        Assert.Equal((32, 16), (w, h));
-
-        byte[] jpeg = [0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x04, 0x00, 0x00, 0xFF, 0xC0, 0x00, 0x11, 0x08, 0x01, 0x2C, 0x02, 0x58, 0x03];
-        Assert.True(MediaEstimator.TryReadSize(jpeg, out w, out h));
-        Assert.Equal((600, 300), (w, h));
+        Assert.True(MediaEstimator.TryReadSize(Convert.FromBase64String(Png(640, 480)), out int width, out int height));
+        Assert.Equal((640, 480), (width, height));
     }
 
+    [Fact]
+    public void Image_size_is_read_from_a_gif_header()
+    {
+        byte[] gif = [(byte)'G', (byte)'I', (byte)'F', (byte)'8', (byte)'9', (byte)'a', 0x20, 0x00, 0x10, 0x00];
+
+        Assert.True(MediaEstimator.TryReadSize(gif, out int width, out int height));
+        Assert.Equal((32, 16), (width, height));
+    }
+
+    [Fact]
+    public void Image_size_is_read_from_a_jpeg_header()
+    {
+        byte[] jpeg = [0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x04, 0x00, 0x00, 0xFF, 0xC0, 0x00, 0x11, 0x08, 0x01, 0x2C, 0x02, 0x58, 0x03];
+
+        Assert.True(MediaEstimator.TryReadSize(jpeg, out int width, out int height));
+        Assert.Equal((600, 300), (width, height));
+    }
+
+    private static ExchangeAnalysis AnalyzeClaudeCodeRequest(string? usage = ClaudeCodeUsage) =>
+        ExchangeAnalysis.Analyze(Log(new(ClaudeCodeRequest), usage));
+
+    private static ContextSegment SystemOf(ContextSegment request) => request.Children[0];
+
+    private static ContextSegment ToolsOf(ContextSegment request) => request.Children[1];
+
+    private static ContextSegment MessagesOf(ContextSegment request) => request.Children[2];
+
+    private static Dictionary<string, List<string>> LabelsByCategory(ExchangeAnalysis analysis) =>
+        analysis.InputBreakdown.ToDictionary(category => category.Name, category => category.Items.Select(item => item.Label).ToList());
+
+    /// <summary>A base64 PNG holding just the signature and the IHDR size fields.</summary>
     private static string Png(int width, int height)
     {
-        var bytes = new byte[24];
-        new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 13, (byte)'I', (byte)'H', (byte)'D', (byte)'R' }.CopyTo(bytes, 0);
-        System.Buffers.Binary.BinaryPrimitives.WriteInt32BigEndian(bytes.AsSpan(16), width);
-        System.Buffers.Binary.BinaryPrimitives.WriteInt32BigEndian(bytes.AsSpan(20), height);
+        byte[] bytes = new byte[24];
+        byte[] signatureAndIhdr = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 13, (byte)'I', (byte)'H', (byte)'D', (byte)'R'];
+        signatureAndIhdr.CopyTo(bytes, 0);
+        BinaryPrimitives.WriteInt32BigEndian(bytes.AsSpan(16), width);
+        BinaryPrimitives.WriteInt32BigEndian(bytes.AsSpan(20), height);
         return Convert.ToBase64String(bytes);
     }
 
-    private static ExchangeLog Log(string requestJson, string? usage, string target = "/anthropic/v1/messages?beta=true", string userAgent = "claude-cli/2.1.0 (external, cli)") => new()
+    private static ExchangeLog Log(CapturedRequest request, string? usage = null) => new()
     {
         Id = "2026-01-01T00-00-00.000Z_0001_POST_v1-messages",
         Sequence = 1,
         StartedAt = DateTimeOffset.Parse("2026-01-01T00:00:00Z"),
         CompletedAt = DateTimeOffset.Parse("2026-01-01T00:00:01Z"),
         DurationMs = 1000,
-        Route = target.Split('/')[1],
-        UpstreamUrl = "https://upstream.example" + target,
+        Route = request.Target.Split('/')[1],
+        UpstreamUrl = "https://upstream.example" + request.Target,
         Outcome = ExchangeOutcome.Completed,
         Request = new LoggedRequest
         {
             Method = "POST",
-            Target = target,
-            Headers = new() { ["User-Agent"] = userAgent },
-            Body = new LoggedBody { Format = BodyFormat.Json, SizeBytes = requestJson.Length, Content = Parse(requestJson) },
+            Target = request.Target,
+            Headers = new() { ["User-Agent"] = request.UserAgent },
+            Body = LoggedBodies.Json(request.Json),
         },
         Response = new LoggedResponse
         {
             StatusCode = 200,
             Headers = new() { ["Content-Type"] = "application/json" },
-            Body = new LoggedBody
-            {
-                Format = BodyFormat.Json,
-                SizeBytes = 10,
-                Content = Parse(usage is null ? """{"content":[]}""" : $$"""{"type":"message","content":[],"usage":{{usage}}}"""),
-            },
+            Body = LoggedBodies.Json(usage is null ? """{"content":[]}""" : $$"""{"type":"message","content":[],"usage":{{usage}}}"""),
         },
     };
 
@@ -280,9 +329,10 @@ public sealed class ContextAnalysisTests
         {
             StatusCode = 200,
             Headers = new() { ["content-type"] = "text/event-stream" },
-            Body = new LoggedBody { Format = BodyFormat.Text, SizeBytes = sse.Length, Content = JsonSerializer.SerializeToElement(sse, AiLogJsonContext.Default.String) },
+            Body = LoggedBodies.Text(sse),
         },
     };
 
-    private static JsonElement Parse(string json) => JsonDocument.Parse(json).RootElement.Clone();
+    /// <summary>The request a harness sent: its JSON body, target and user agent.</summary>
+    private sealed record CapturedRequest(string Json, string Target = AnthropicTarget, string UserAgent = ClaudeCliUserAgent);
 }

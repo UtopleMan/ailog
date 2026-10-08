@@ -1,6 +1,7 @@
 using System.Text.Json;
 using AiLog.Shared;
 using AiLog.Shared.Providers;
+using Xunit.Sdk;
 
 namespace AiLog.Host.Tests;
 
@@ -9,7 +10,7 @@ public sealed class ReassemblyTests
     [Fact]
     public void Anthropic_stream_folds_into_the_final_message()
     {
-        var message = Reassemble(new AnthropicMessagesAdapter(), """
+        JsonElement message = Reassemble(new AnthropicMessagesAdapter(), """
             event: message_start
             data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-x","content":[],"stop_reason":null,"usage":{"input_tokens":10,"output_tokens":1}}}
 
@@ -68,7 +69,7 @@ public sealed class ReassemblyTests
         Assert.Equal(42, message.GetProperty("usage").GetProperty("output_tokens").GetInt32());
         Assert.Equal(10, message.GetProperty("usage").GetProperty("input_tokens").GetInt32());
 
-        var content = message.GetProperty("content");
+        JsonElement content = message.GetProperty("content");
         Assert.Equal(3, content.GetArrayLength());
         Assert.Equal("Let me think.", content[0].GetProperty("thinking").GetString());
         Assert.Equal("sig", content[0].GetProperty("signature").GetString());
@@ -79,7 +80,7 @@ public sealed class ReassemblyTests
     [Fact]
     public void Aborted_anthropic_stream_keeps_what_arrived()
     {
-        var message = Reassemble(new AnthropicMessagesAdapter(), """
+        JsonElement message = Reassemble(new AnthropicMessagesAdapter(), """
             event: message_start
             data: {"type":"message_start","message":{"id":"msg_2","content":[],"usage":{"input_tokens":5}}}
 
@@ -96,7 +97,7 @@ public sealed class ReassemblyTests
     [Fact]
     public void OpenAI_chat_stream_folds_into_a_chat_completion()
     {
-        var completion = Reassemble(new OpenAiChatAdapter(), """
+        JsonElement completion = Reassemble(new OpenAiChatAdapter(), """
             data: {"id":"c1","object":"chat.completion.chunk","created":1,"model":"gpt-x","choices":[{"index":0,"delta":{"role":"assistant","content":""}}]}
 
             data: {"id":"c1","object":"chat.completion.chunk","created":1,"model":"gpt-x","choices":[{"index":0,"delta":{"content":"Hi "}}]}
@@ -119,12 +120,12 @@ public sealed class ReassemblyTests
 
         Assert.Equal("chat.completion", completion.GetProperty("object").GetString());
         Assert.Equal(7, completion.GetProperty("usage").GetProperty("prompt_tokens").GetInt32());
-        var choice = completion.GetProperty("choices")[0];
+        JsonElement choice = completion.GetProperty("choices")[0];
         Assert.Equal("tool_calls", choice.GetProperty("finish_reason").GetString());
-        var message = choice.GetProperty("message");
+        JsonElement message = choice.GetProperty("message");
         Assert.Equal("assistant", message.GetProperty("role").GetString());
         Assert.Equal("Hi there", message.GetProperty("content").GetString());
-        var call = message.GetProperty("tool_calls")[0];
+        JsonElement call = message.GetProperty("tool_calls")[0];
         Assert.Equal("call_1", call.GetProperty("id").GetString());
         Assert.Equal("get_weather", call.GetProperty("function").GetProperty("name").GetString());
         Assert.Equal("""{"city":"Oslo"}""", call.GetProperty("function").GetProperty("arguments").GetString());
@@ -133,7 +134,7 @@ public sealed class ReassemblyTests
     [Fact]
     public void OpenAI_responses_stream_uses_the_completed_response()
     {
-        var response = Reassemble(new OpenAiResponsesAdapter(), """
+        JsonElement response = Reassemble(new OpenAiResponsesAdapter(), """
             event: response.created
             data: {"type":"response.created","response":{"id":"resp_1","status":"in_progress","output":[]}}
 
@@ -152,7 +153,7 @@ public sealed class ReassemblyTests
     [Fact]
     public void Aborted_openai_responses_stream_is_rebuilt_from_items_and_deltas()
     {
-        var response = Reassemble(new OpenAiResponsesAdapter(), """
+        JsonElement response = Reassemble(new OpenAiResponsesAdapter(), """
             event: response.created
             data: {"type":"response.created","response":{"id":"resp_2","status":"in_progress","output":[]}}
 
@@ -175,15 +176,19 @@ public sealed class ReassemblyTests
             data: {"type":"response.output_text.delta","output_index":1,"content_index":0,"delta":"sentence"}
             """);
 
-        var output = response.GetProperty("output");
+        JsonElement output = response.GetProperty("output");
         Assert.Equal("""{"cmd":"ls"}""", output[0].GetProperty("arguments").GetString());
         Assert.Equal("Half a sentence", output[1].GetProperty("content")[0].GetProperty("text").GetString());
     }
 
     [Fact]
     public void Streams_in_another_format_are_not_reassembled() =>
-        Assert.Null(new AnthropicMessagesAdapter().Reassemble(Sse.Parse("data: [DONE]\n\n")));
+        Assert.Null(new AnthropicMessagesAdapter().Reassemble(Sse.Parse("""
+            data: [DONE]
+
+
+            """)));
 
     private static JsonElement Reassemble(IProviderAdapter adapter, string sse) =>
-        adapter.Reassemble(Sse.Parse(sse)) ?? throw new Xunit.Sdk.XunitException("nothing reassembled");
+        adapter.Reassemble(Sse.Parse(sse)) ?? throw new XunitException("nothing reassembled");
 }

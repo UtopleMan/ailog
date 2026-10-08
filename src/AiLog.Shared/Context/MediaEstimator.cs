@@ -7,6 +7,9 @@ namespace AiLog.Shared.Context;
 /// <summary>A media token estimate and how it was reached.</summary>
 public sealed record MediaEstimate(long Tokens, string Note);
 
+/// <summary>Pixel dimensions read from an image header.</summary>
+public readonly record struct ImageSize(int Width, int Height);
+
 /// <summary>
 /// Rough token costs for images and documents, which providers bill by dimensions or pages rather than by their
 /// encoded size. Uses Anthropic's published formula (pixels / 750 after downscaling to fit 1568px and ~1.15MP).
@@ -35,9 +38,9 @@ public static partial class MediaEstimator
     /// <summary>Estimates an image from the dimensions in its base64-encoded header.</summary>
     public static MediaEstimate Image(string? base64)
     {
-        if (base64 is not null && TryReadSize(DecodePrefix(base64, HeaderBase64Chars), out int width, out int height))
+        if (base64 is not null && ReadSize(DecodePrefix(base64, HeaderBase64Chars)) is { } size)
         {
-            return new MediaEstimate(ImageTokens(width, height), $"{width}×{height} px");
+            return new MediaEstimate(ImageTokens(size.Width, size.Height), $"{size.Width}×{size.Height} px");
         }
 
         return new MediaEstimate(UnknownImageTokens, "size unknown, flat estimate");
@@ -109,14 +112,11 @@ public static partial class MediaEstimator
         }
     }
 
-    /// <summary>Reads the pixel size from a PNG, GIF, WebP or JPEG header.</summary>
-    public static bool TryReadSize(ReadOnlySpan<byte> data, out int width, out int height)
-    {
-        (width, height) = ReadSize(data);
-        return width > 0 && height > 0;
-    }
+    /// <summary>Reads the pixel size from a PNG, GIF, WebP or JPEG header; null when unrecognised or empty.</summary>
+    public static ImageSize? ReadSize(ReadOnlySpan<byte> data) =>
+        ReadHeaderSize(data) is { Width: > 0, Height: > 0 } size ? size : null;
 
-    private static (int Width, int Height) ReadSize(ReadOnlySpan<byte> data)
+    private static ImageSize? ReadHeaderSize(ReadOnlySpan<byte> data)
     {
         if (IsPng(data))
         {
@@ -138,7 +138,7 @@ public static partial class MediaEstimator
             return ReadJpegSize(data);
         }
 
-        return (0, 0);
+        return null;
     }
 
     private static bool IsPng(ReadOnlySpan<byte> data) => data.Length >= 24 && data[..8].SequenceEqual(PngSignature);
@@ -151,40 +151,40 @@ public static partial class MediaEstimator
     private static bool IsJpeg(ReadOnlySpan<byte> data) => data.Length >= 4 && data[0] == 0xFF && data[1] == 0xD8;
 
     /// <summary>IHDR is always the first chunk.</summary>
-    private static (int Width, int Height) ReadPngSize(ReadOnlySpan<byte> data) =>
-        (BinaryPrimitives.ReadInt32BigEndian(data[16..]), BinaryPrimitives.ReadInt32BigEndian(data[20..]));
+    private static ImageSize ReadPngSize(ReadOnlySpan<byte> data) =>
+        new ImageSize(BinaryPrimitives.ReadInt32BigEndian(data[16..]), BinaryPrimitives.ReadInt32BigEndian(data[20..]));
 
-    private static (int Width, int Height) ReadGifSize(ReadOnlySpan<byte> data) =>
-        (BinaryPrimitives.ReadUInt16LittleEndian(data[6..]), BinaryPrimitives.ReadUInt16LittleEndian(data[8..]));
+    private static ImageSize ReadGifSize(ReadOnlySpan<byte> data) =>
+        new ImageSize(BinaryPrimitives.ReadUInt16LittleEndian(data[6..]), BinaryPrimitives.ReadUInt16LittleEndian(data[8..]));
 
     /// <summary>RIFF....WEBP is followed by a VP8, VP8L or VP8X chunk, each storing the size differently.</summary>
-    private static (int Width, int Height) ReadWebPSize(ReadOnlySpan<byte> data)
+    private static ImageSize? ReadWebPSize(ReadOnlySpan<byte> data)
     {
         ReadOnlySpan<byte> chunk = data[12..16];
         if (chunk.SequenceEqual("VP8 "u8))
         {
-            return (BinaryPrimitives.ReadUInt16LittleEndian(data[26..]) & WebPDimensionMask,
+            return new ImageSize(BinaryPrimitives.ReadUInt16LittleEndian(data[26..]) & WebPDimensionMask,
                 BinaryPrimitives.ReadUInt16LittleEndian(data[28..]) & WebPDimensionMask);
         }
 
         if (chunk.SequenceEqual("VP8L"u8))
         {
             uint bits = BinaryPrimitives.ReadUInt32LittleEndian(data[21..]);
-            return ((int)(bits & WebPDimensionMask) + 1, (int)((bits >> 14) & WebPDimensionMask) + 1);
+            return new ImageSize((int)(bits & WebPDimensionMask) + 1, (int)((bits >> 14) & WebPDimensionMask) + 1);
         }
 
         if (chunk.SequenceEqual("VP8X"u8))
         {
-            return (ReadUInt24LittleEndian(data[24..]) + 1, ReadUInt24LittleEndian(data[27..]) + 1);
+            return new ImageSize(ReadUInt24LittleEndian(data[24..]) + 1, ReadUInt24LittleEndian(data[27..]) + 1);
         }
 
-        return (0, 0);
+        return null;
     }
 
     private static int ReadUInt24LittleEndian(ReadOnlySpan<byte> data) => data[0] | data[1] << 8 | data[2] << 16;
 
     /// <summary>Walks the segments to the first start-of-frame marker.</summary>
-    private static (int Width, int Height) ReadJpegSize(ReadOnlySpan<byte> data)
+    private static ImageSize? ReadJpegSize(ReadOnlySpan<byte> data)
     {
         int position = 2;
         while (position + 9 < data.Length && data[position] == 0xFF)
@@ -192,7 +192,7 @@ public static partial class MediaEstimator
             byte marker = data[position + 1];
             if (IsStartOfFrame(marker))
             {
-                return (BinaryPrimitives.ReadUInt16BigEndian(data[(position + 7)..]),
+                return new ImageSize(BinaryPrimitives.ReadUInt16BigEndian(data[(position + 7)..]),
                     BinaryPrimitives.ReadUInt16BigEndian(data[(position + 5)..]));
             }
 
@@ -200,7 +200,7 @@ public static partial class MediaEstimator
             position += 2 + segmentLength;
         }
 
-        return (0, 0);
+        return null;
     }
 
     /// <summary>SOF0 to SOF15, except DHT (C4), JPG (C8) and DAC (CC) which share the range.</summary>

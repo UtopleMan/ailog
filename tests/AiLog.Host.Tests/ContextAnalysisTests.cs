@@ -244,8 +244,7 @@ public sealed class ContextAnalysisTests
     [Fact]
     public void Image_size_is_read_from_a_png_header()
     {
-        Assert.True(MediaEstimator.TryReadSize(Convert.FromBase64String(Png(640, 480)), out int width, out int height));
-        Assert.Equal((640, 480), (width, height));
+        Assert.Equal(new ImageSize(640, 480), MediaEstimator.ReadSize(Convert.FromBase64String(Png(640, 480))));
     }
 
     [Fact]
@@ -253,8 +252,7 @@ public sealed class ContextAnalysisTests
     {
         byte[] gif = [(byte)'G', (byte)'I', (byte)'F', (byte)'8', (byte)'9', (byte)'a', 0x20, 0x00, 0x10, 0x00];
 
-        Assert.True(MediaEstimator.TryReadSize(gif, out int width, out int height));
-        Assert.Equal((32, 16), (width, height));
+        Assert.Equal(new ImageSize(32, 16), MediaEstimator.ReadSize(gif));
     }
 
     [Fact]
@@ -262,8 +260,7 @@ public sealed class ContextAnalysisTests
     {
         byte[] jpeg = [0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x04, 0x00, 0x00, 0xFF, 0xC0, 0x00, 0x11, 0x08, 0x01, 0x2C, 0x02, 0x58, 0x03];
 
-        Assert.True(MediaEstimator.TryReadSize(jpeg, out int width, out int height));
-        Assert.Equal((600, 300), (width, height));
+        Assert.Equal(new ImageSize(600, 300), MediaEstimator.ReadSize(jpeg));
     }
 
     private static ExchangeAnalysis AnalyzeClaudeCodeRequest(string? usage = ClaudeCodeUsage) =>

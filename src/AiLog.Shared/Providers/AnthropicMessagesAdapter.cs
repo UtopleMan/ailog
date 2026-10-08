@@ -9,11 +9,16 @@ namespace AiLog.Shared.Providers;
 /// <summary>Anthropic Messages API (<c>POST /v1/messages</c>), JSON or streamed.</summary>
 public sealed class AnthropicMessagesAdapter : ProviderAdapter
 {
+    private const string EndpointPath = "/v1/messages";
+
+    /// <inheritdoc/>
     public override string Name => "Anthropic Messages";
 
+    /// <inheritdoc/>
     public override bool Matches(ExchangeLog log) =>
-        PathOf(log).EndsWith("/v1/messages", StringComparison.OrdinalIgnoreCase) && BodyHas(log, "messages");
+        PathOf(log).EndsWith(EndpointPath, StringComparison.OrdinalIgnoreCase) && BodyHas(log, "messages");
 
+    /// <inheritdoc/>
     protected override void ApplyUsage(JsonElement document, UsageBuilder usage)
     {
         if (document.ValueKind != JsonValueKind.Object)
@@ -22,18 +27,19 @@ public sealed class AnthropicMessagesAdapter : ProviderAdapter
         }
 
         // SSE message_start carries the input counts inside "message"; message_delta and JSON bodies at the top.
-        if (Json.String(document, "type") == "message_start" && Json.TryObject(document, "message", out var message)
-            && Json.TryObject(message, "usage", out var startUsage))
+        if (Json.String(document, "type") == "message_start"
+            && Json.TryObject(document, "message", out JsonElement message)
+            && Json.TryObject(message, "usage", out JsonElement startUsage))
         {
-            Apply(startUsage, usage);
+            ApplyUsageFields(startUsage, usage);
         }
-        else if (Json.TryObject(document, "usage", out var bodyUsage))
+        else if (Json.TryObject(document, "usage", out JsonElement bodyUsage))
         {
-            Apply(bodyUsage, usage);
+            ApplyUsageFields(bodyUsage, usage);
         }
     }
 
-    private static void Apply(JsonElement usage, UsageBuilder builder)
+    private static void ApplyUsageFields(JsonElement usage, UsageBuilder builder)
     {
         // OpenAI usage shapes are left to their own adapters. (Anthropic has output_tokens_details too.)
         if (usage.TryGetProperty("prompt_tokens", out _) || usage.TryGetProperty("input_tokens_details", out _))
@@ -47,350 +53,344 @@ public sealed class AnthropicMessagesAdapter : ProviderAdapter
         builder.CacheWrite(usage, "cache_creation_input_tokens");
     }
 
+    /// <inheritdoc/>
     public override JsonElement? Reassemble(IReadOnlyList<SseEvent> events)
     {
-        JsonObject? message = null;
-        var blocks = new SortedDictionary<int, JsonObject>();
-        var partialInputs = new Dictionary<int, StringBuilder>();
-        var recognised = false;
-
-        foreach (var item in events)
+        var stream = new MessageStream();
+        foreach (SseEvent item in events)
         {
-            if (Json.TryParseNode(item.Data) is not JsonObject data)
+            if (Json.TryParseNode(item.Data) is JsonObject data)
             {
-                continue;
+                stream.Apply(data);
+            }
+        }
+
+        return stream.Finish();
+    }
+
+    /// <inheritdoc/>
+    public override ContextSegment ParseRequest(JsonElement body)
+    {
+        var blocks = new BlockParser();
+        ContextSegment system = GroupOf(SystemGroup, blocks.ParseSystem(body));
+        ContextSegment tools = GroupOf(ToolsGroup, Json.Items(body, "tools").Select(ParseToolDefinition));
+        ContextSegment messages = GroupOf(MessagesGroup, Json.Items(body, "messages").Select((message, i) => blocks.ParseMessage(message, i + 1)));
+        return GroupOf(RequestRoot, [system, tools, messages]);
+    }
+
+    private static ContextSegment ParseToolDefinition(JsonElement tool)
+    {
+        ContextSegment segment = ToolDefinition(tool, Json.String(tool, "name"));
+        segment.CacheBreakpoint = HasCacheBreakpoint(tool);
+        return segment;
+    }
+
+    private static bool HasCacheBreakpoint(JsonElement block) => block.TryGetProperty("cache_control", out _);
+
+    /// <summary>Anthropic's cache prefix is tools, then system, then messages.</summary>
+    public override IEnumerable<ContextSegment> CacheOrder(ContextSegment request) =>
+        [request.Children[1], request.Children[0], request.Children[2]];
+
+    /// <inheritdoc/>
+    public override ContextSegment ParseResponse(JsonElement message)
+    {
+        var blocks = new BlockParser();
+        ContextSegment output = GroupOf(OutputRoot, Json.Items(message, "content").Select(blocks.Parse));
+        AddError(output, message);
+        SetRole(output, AssistantRole);
+        output.Note = Json.String(message, "stop_reason") is { } stopReason ? $"stop reason: {stopReason}" : null;
+        return output;
+    }
+
+    /// <summary>Parses content blocks, labelling tool results with the name of the tool_use they answer.</summary>
+    private sealed class BlockParser
+    {
+        private const string SystemLabel = "system";
+        private const string PdfMediaType = "application/pdf";
+
+        private readonly ToolCallNames toolNames = new();
+
+        public List<ContextSegment> ParseSystem(JsonElement body)
+        {
+            if (!body.TryGetProperty("system", out JsonElement system))
+            {
+                return [];
             }
 
-            var index = Json.Int(data, "index") ?? 0;
+            List<ContextSegment> blocks = system.ValueKind == JsonValueKind.String
+                ? [ContextSegment.FromText(SegmentKind.Text, SystemLabel, system.GetString())]
+                : ParseContent(system, Parse).ToList();
+            foreach (ContextSegment block in blocks)
+            {
+                block.Role = SystemRole;
+            }
+
+            return blocks;
+        }
+
+        public ContextSegment ParseMessage(JsonElement message, int number)
+        {
+            string role = Json.String(message, "role") ?? UnknownRole;
+            ContextSegment node = Message($"#{number} {role}", role);
+            if (message.TryGetProperty("content", out JsonElement content))
+            {
+                node.Children.AddRange(ParseContent(content, Parse));
+            }
+
+            SetRole(node, role);
+            return node;
+        }
+
+        public ContextSegment Parse(JsonElement block)
+        {
+            string? type = Json.String(block, "type");
+            ContextSegment segment = type switch
+            {
+                "text" => ContextSegment.FromText(SegmentKind.Text, TextLabel, Json.String(block, "text")),
+                "thinking" => ContextSegment.FromText(SegmentKind.Thinking, "thinking", Json.String(block, "thinking")),
+                "redacted_thinking" => RedactedThinking(block),
+                "tool_use" or "server_tool_use" or "mcp_tool_use" => ToolUse(block),
+                "image" => Image(block),
+                "document" => Document(block),
+                _ when type?.EndsWith("tool_result", StringComparison.Ordinal) == true => ToolResult(block),
+                _ => Unknown(block, type),
+            };
+
+            segment.CacheBreakpoint = HasCacheBreakpoint(block);
+            return segment;
+        }
+
+        private static ContextSegment RedactedThinking(JsonElement block) =>
+            new()
+            {
+                Kind = SegmentKind.Thinking,
+                Label = "redacted thinking",
+                Text = "",
+                Weight = Json.String(block, "data")?.Length ?? 0,
+                Note = "encrypted; size from the encrypted payload",
+            };
+
+        private ContextSegment ToolUse(JsonElement block)
+        {
+            string name = Json.String(block, "name") ?? UnnamedTool;
+            toolNames.Remember(Json.String(block, "id"), name);
+            return block.TryGetProperty("input", out JsonElement input)
+                ? ContextSegment.FromJson(SegmentKind.ToolCall, name, input)
+                : ContextSegment.FromText(SegmentKind.ToolCall, name, "");
+        }
+
+        private ContextSegment ToolResult(JsonElement block)
+        {
+            string name = toolNames.Find(Json.String(block, "tool_use_id")) ?? Json.String(block, "type") ?? "tool_result";
+            var result = new ContextSegment { Kind = SegmentKind.ToolResult, Label = name };
+            if (block.TryGetProperty("is_error", out JsonElement isError) && isError.ValueKind == JsonValueKind.True)
+            {
+                result.Note = "error";
+            }
+
+            if (block.TryGetProperty("content", out JsonElement content))
+            {
+                SetResultContent(result, content);
+            }
+            else
+            {
+                result.Text = "";
+            }
+
+            return result;
+        }
+
+        private void SetResultContent(ContextSegment result, JsonElement content)
+        {
+            switch (content.ValueKind)
+            {
+                case JsonValueKind.String:
+                    result.Text = content.GetString();
+                    result.Weight = result.Text?.Length ?? 0;
+                    break;
+                case JsonValueKind.Array:
+                    foreach (JsonElement part in content.EnumerateArray())
+                    {
+                        ContextSegment child = Parse(part);
+                        child.Label = $"{result.Label} · {child.Label}";
+                        result.Children.Add(child);
+                    }
+
+                    break;
+                default:
+                    // Server tool results (web search etc.) carry structured content.
+                    result.Json = Json.Format(content);
+                    result.Weight = Json.Format(content, indented: false).Length;
+                    break;
+            }
+        }
+
+        private static ContextSegment Image(JsonElement block)
+        {
+            if (!Json.TryObject(block, "source", out JsonElement source))
+            {
+                return ImageFromBase64(ImageLabel, null);
+            }
+
+            return Json.String(source, "type") switch
+            {
+                "base64" => ImageFromBase64($"image ({Json.String(source, "media_type")})", Json.String(source, "data")),
+                "url" => ImageFromUrl(ImageLabel, Json.String(source, "url")),
+                _ => ImageFromBase64(ImageLabel, null),
+            };
+        }
+
+        private ContextSegment Document(JsonElement block)
+        {
+            string title = Json.String(block, "title") is { } documentTitle ? $"document: {documentTitle}" : "document";
+            if (!Json.TryObject(block, "source", out JsonElement source))
+            {
+                return Unknown(block, "document");
+            }
+
+            return Json.String(source, "type") switch
+            {
+                "base64" when Json.String(source, "media_type") == PdfMediaType => PdfFromBase64(title, Json.String(source, "data")),
+                "text" => ContextSegment.FromText(SegmentKind.Document, title, Json.String(source, "data")),
+                "content" when Json.TryArray(source, "content", out JsonElement parts) => DocumentOf(title, parts),
+                _ => UnsizedDocument(title, source),
+            };
+        }
+
+        private ContextSegment DocumentOf(string title, JsonElement parts)
+        {
+            var document = new ContextSegment { Kind = SegmentKind.Document, Label = title };
+            document.Children.AddRange(parts.EnumerateArray().Select(Parse));
+            return document;
+        }
+    }
+
+    /// <summary>Folds message_start, content_block_* and message_delta events back into one message.</summary>
+    private sealed class MessageStream
+    {
+        private readonly SortedDictionary<int, JsonObject> blocks = new();
+        private readonly Dictionary<int, StringBuilder> partialInputs = new();
+        private JsonObject? message;
+        private bool isRecognised;
+
+        public void Apply(JsonObject data)
+        {
+            int index = Json.Int(data, "index") ?? 0;
             switch (Json.String(data, "type"))
             {
                 case "message_start":
                     message = data["message"]?.DeepClone() as JsonObject;
-                    recognised = true;
+                    isRecognised = true;
                     break;
-
                 case "content_block_start" when data["content_block"] is JsonObject block:
                     blocks[index] = (JsonObject)block.DeepClone();
-                    recognised = true;
+                    isRecognised = true;
                     break;
-
-                case "content_block_delta" when data["delta"] is JsonObject delta && blocks.TryGetValue(index, out var target):
-                    ApplyDelta(target, delta, index, partialInputs);
+                case "content_block_delta":
+                    ApplyBlockDelta(data, index);
                     break;
-
                 case "content_block_stop":
-                    FinishInput(blocks, partialInputs, index);
+                    FinishInput(index);
                     break;
-
                 case "message_delta":
-                    message ??= new JsonObject();
-                    if (data["delta"] is JsonObject messageDelta)
-                    {
-                        foreach (var (name, value) in messageDelta)
-                        {
-                            message[name] = value?.DeepClone();
-                        }
-                    }
-
-                    if (data["usage"] is JsonObject usageDelta)
-                    {
-                        if (message["usage"] is not JsonObject usage)
-                        {
-                            message["usage"] = usage = new JsonObject();
-                        }
-
-                        foreach (var (name, value) in usageDelta)
-                        {
-                            usage[name] = value?.DeepClone();
-                        }
-                    }
-
-                    recognised = true;
+                    ApplyMessageDelta(data);
+                    isRecognised = true;
                     break;
-
                 case "error":
                     message ??= new JsonObject();
                     message["error"] = data["error"]?.DeepClone();
-                    recognised = true;
+                    isRecognised = true;
                     break;
             }
         }
 
-        if (!recognised)
+        /// <summary>The folded message; null when the stream held no Anthropic events.</summary>
+        public JsonElement? Finish()
         {
-            return null;
-        }
-
-        // An aborted stream may stop mid tool input.
-        foreach (var index in partialInputs.Keys.ToList())
-        {
-            FinishInput(blocks, partialInputs, index);
-        }
-
-        message ??= new JsonObject { ["type"] = "message", ["role"] = "assistant" };
-        message["content"] = new JsonArray(blocks.Values.Select(b => (JsonNode)b).ToArray());
-        return Json.ToElement(message);
-    }
-
-    private static void ApplyDelta(JsonObject block, JsonObject delta, int index, Dictionary<int, StringBuilder> partialInputs)
-    {
-        switch (Json.String(delta, "type"))
-        {
-            case "text_delta":
-                Json.Append(block, "text", Json.String(delta, "text"));
-                break;
-            case "thinking_delta":
-                Json.Append(block, "thinking", Json.String(delta, "thinking"));
-                break;
-            case "signature_delta":
-                block["signature"] = Json.String(delta, "signature");
-                break;
-            case "input_json_delta":
-                if (!partialInputs.TryGetValue(index, out var input))
-                {
-                    partialInputs[index] = input = new StringBuilder();
-                }
-
-                input.Append(Json.String(delta, "partial_json"));
-                break;
-            case "citations_delta" when delta["citation"] is { } citation:
-                if (block["citations"] is not JsonArray citations)
-                {
-                    block["citations"] = citations = new JsonArray();
-                }
-
-                citations.Add(citation.DeepClone());
-                break;
-        }
-    }
-
-    private static void FinishInput(SortedDictionary<int, JsonObject> blocks, Dictionary<int, StringBuilder> partialInputs, int index)
-    {
-        if (!partialInputs.Remove(index, out var input) || !blocks.TryGetValue(index, out var block))
-        {
-            return;
-        }
-
-        var text = input.ToString();
-        block["input"] = text.Length == 0 ? new JsonObject() : Json.TryParseNode(text) ?? JsonValue.Create(text);
-    }
-
-    public override ContextSegment ParseRequest(JsonElement body)
-    {
-        var root = ContextSegment.Group("Request");
-        var toolNames = new Dictionary<string, string>(StringComparer.Ordinal);
-
-        var system = ContextSegment.Group(SystemGroup);
-        if (body.TryGetProperty("system", out var systemValue))
-        {
-            if (systemValue.ValueKind == JsonValueKind.String)
+            if (!isRecognised)
             {
-                system.Children.Add(ContextSegment.FromText(SegmentKind.Text, "system", systemValue.GetString()));
+                return null;
             }
-            else if (systemValue.ValueKind == JsonValueKind.Array)
+
+            // An aborted stream may stop mid tool input.
+            foreach (int index in partialInputs.Keys.ToList())
             {
-                foreach (var block in systemValue.EnumerateArray())
-                {
-                    system.Children.Add(ParseBlock(block, toolNames));
-                }
+                FinishInput(index);
+            }
+
+            JsonObject result = message ?? new JsonObject { ["type"] = "message", ["role"] = AssistantRole };
+            result["content"] = new JsonArray(blocks.Values.Select(b => (JsonNode)b).ToArray());
+            return Json.ToElement(result);
+        }
+
+        private void ApplyBlockDelta(JsonObject data, int index)
+        {
+            if (data["delta"] is not JsonObject delta || !blocks.TryGetValue(index, out JsonObject? block))
+            {
+                return;
+            }
+
+            switch (Json.String(delta, "type"))
+            {
+                case "text_delta":
+                    Json.Append(block, "text", Json.String(delta, "text"));
+                    break;
+                case "thinking_delta":
+                    Json.Append(block, "thinking", Json.String(delta, "thinking"));
+                    break;
+                case "signature_delta":
+                    block["signature"] = Json.String(delta, "signature");
+                    break;
+                case "input_json_delta":
+                    PartialInput(index).Append(Json.String(delta, "partial_json"));
+                    break;
+                case "citations_delta" when delta["citation"] is { } citation:
+                    Json.GetOrAddArray(block, "citations").Add(citation.DeepClone());
+                    break;
             }
         }
 
-        foreach (var block in system.Children)
+        private StringBuilder PartialInput(int index)
         {
-            block.Role = "system";
+            if (!partialInputs.TryGetValue(index, out StringBuilder? input))
+            {
+                partialInputs[index] = input = new StringBuilder();
+            }
+
+            return input;
         }
 
-        var tools = ContextSegment.Group(ToolsGroup);
-        if (Json.TryArray(body, "tools", out var toolArray))
+        private void FinishInput(int index)
         {
-            foreach (var tool in toolArray.EnumerateArray())
+            if (!partialInputs.Remove(index, out StringBuilder? input) || !blocks.TryGetValue(index, out JsonObject? block))
             {
-                var name = Json.String(tool, "name") ?? Json.String(tool, "type") ?? "tool";
-                var segment = ContextSegment.FromJson(SegmentKind.ToolDefinition, name, tool);
-                segment.CacheBreakpoint = tool.TryGetProperty("cache_control", out _);
-                tools.Children.Add(segment);
+                return;
+            }
+
+            string text = input.ToString();
+            block["input"] = text.Length == 0 ? new JsonObject() : Json.TryParseNode(text) ?? JsonValue.Create(text);
+        }
+
+        private void ApplyMessageDelta(JsonObject data)
+        {
+            message ??= new JsonObject();
+            if (data["delta"] is JsonObject messageDelta)
+            {
+                CopyProperties(messageDelta, message);
+            }
+
+            if (data["usage"] is JsonObject usageDelta)
+            {
+                CopyProperties(usageDelta, Json.GetOrAddObject(message, "usage"));
             }
         }
 
-        var messages = ContextSegment.Group(MessagesGroup);
-        if (Json.TryArray(body, "messages", out var messageArray))
+        private static void CopyProperties(JsonObject source, JsonObject target)
         {
-            var number = 0;
-            foreach (var message in messageArray.EnumerateArray())
+            foreach ((string name, JsonNode? value) in source)
             {
-                number++;
-                var role = Json.String(message, "role") ?? "?";
-                var node = new ContextSegment { Kind = SegmentKind.Message, Label = $"#{number} {role}", Role = role };
-                if (message.TryGetProperty("content", out var content))
-                {
-                    if (content.ValueKind == JsonValueKind.String)
-                    {
-                        node.Children.Add(ContextSegment.FromText(SegmentKind.Text, "text", content.GetString()));
-                    }
-                    else if (content.ValueKind == JsonValueKind.Array)
-                    {
-                        foreach (var block in content.EnumerateArray())
-                        {
-                            node.Children.Add(ParseBlock(block, toolNames));
-                        }
-                    }
-                }
-
-                SetRole(node, role);
-                messages.Children.Add(node);
+                target[name] = value?.DeepClone();
             }
-        }
-
-        root.Children.AddRange([system, tools, messages]);
-        return root;
-    }
-
-    public override IEnumerable<ContextSegment> CacheOrder(ContextSegment request) =>
-        // Anthropic's cache prefix is tools, then system, then messages.
-        [request.Children[1], request.Children[0], request.Children[2]];
-
-    public override ContextSegment ParseResponse(JsonElement message)
-    {
-        var root = ContextSegment.Group("Output");
-        var toolNames = new Dictionary<string, string>(StringComparer.Ordinal);
-        if (Json.TryArray(message, "content", out var content))
-        {
-            foreach (var block in content.EnumerateArray())
-            {
-                root.Children.Add(ParseBlock(block, toolNames));
-            }
-        }
-
-        if (Json.TryObject(message, "error", out var error))
-        {
-            root.Children.Add(ContextSegment.FromJson(SegmentKind.Other, "error", error));
-        }
-
-        SetRole(root, "assistant");
-        root.Note = Json.String(message, "stop_reason") is { } stop ? $"stop reason: {stop}" : null;
-        return root;
-    }
-
-
-    private static ContextSegment ParseBlock(JsonElement block, Dictionary<string, string> toolNames)
-    {
-        var type = Json.String(block, "type");
-        var segment = type switch
-        {
-            "text" => ContextSegment.FromText(SegmentKind.Text, "text", Json.String(block, "text")),
-            "thinking" => ContextSegment.FromText(SegmentKind.Thinking, "thinking", Json.String(block, "thinking")),
-            "redacted_thinking" => new ContextSegment
-            {
-                Kind = SegmentKind.Thinking, Label = "redacted thinking", Text = "",
-                Weight = Json.String(block, "data")?.Length ?? 0, Note = "encrypted; size from the encrypted payload",
-            },
-            "tool_use" or "server_tool_use" or "mcp_tool_use" => ToolUse(block, toolNames),
-            "image" => Image(block),
-            "document" => Document(block, toolNames),
-            _ when type?.EndsWith("tool_result", StringComparison.Ordinal) == true => ToolResult(block, toolNames),
-            _ => Unknown(block, type),
-        };
-
-        segment.CacheBreakpoint = block.TryGetProperty("cache_control", out _);
-        return segment;
-    }
-
-    private static ContextSegment ToolUse(JsonElement block, Dictionary<string, string> toolNames)
-    {
-        var name = Json.String(block, "name") ?? "tool";
-        if (Json.String(block, "id") is { } id)
-        {
-            toolNames[id] = name;
-        }
-
-        return block.TryGetProperty("input", out var input)
-            ? ContextSegment.FromJson(SegmentKind.ToolCall, name, input)
-            : ContextSegment.FromText(SegmentKind.ToolCall, name, "");
-    }
-
-    private static ContextSegment ToolResult(JsonElement block, Dictionary<string, string> toolNames)
-    {
-        var id = Json.String(block, "tool_use_id");
-        var name = id is not null && toolNames.TryGetValue(id, out var known) ? known : Json.String(block, "type") ?? "tool_result";
-        var segment = new ContextSegment { Kind = SegmentKind.ToolResult, Label = name };
-        if (block.TryGetProperty("is_error", out var isError) && isError.ValueKind == JsonValueKind.True)
-        {
-            segment.Note = "error";
-        }
-
-        if (!block.TryGetProperty("content", out var content))
-        {
-            segment.Text = "";
-        }
-        else if (content.ValueKind == JsonValueKind.String)
-        {
-            segment.Text = content.GetString();
-            segment.Weight = segment.Text?.Length ?? 0;
-        }
-        else if (content.ValueKind == JsonValueKind.Array)
-        {
-            foreach (var part in content.EnumerateArray())
-            {
-                var child = ParseBlock(part, toolNames);
-                child.Label = $"{name} · {child.Label}";
-                segment.Children.Add(child);
-            }
-        }
-        else
-        {
-            // Server tool results (web search etc.) carry structured content.
-            segment.Json = Json.Format(content);
-            segment.Weight = Json.Format(content, indented: false).Length;
-        }
-
-        return segment;
-    }
-
-    private static ContextSegment Image(JsonElement block)
-    {
-        if (!Json.TryObject(block, "source", out var source))
-        {
-            return ImageFromBase64("image", null);
-        }
-
-        return Json.String(source, "type") switch
-        {
-            "base64" => ImageFromBase64($"image ({Json.String(source, "media_type")})", Json.String(source, "data")),
-            "url" => ImageFromUrl("image", Json.String(source, "url")),
-            _ => ImageFromBase64("image", null),
-        };
-    }
-
-    private static ContextSegment Document(JsonElement block, Dictionary<string, string> toolNames)
-    {
-        var title = Json.String(block, "title") is { } t ? $"document: {t}" : "document";
-        if (!Json.TryObject(block, "source", out var source))
-        {
-            return Unknown(block, "document");
-        }
-
-        switch (Json.String(source, "type"))
-        {
-            case "base64" when Json.String(source, "media_type") == "application/pdf":
-                return PdfFromBase64(title, Json.String(source, "data"));
-            case "text":
-                var text = ContextSegment.FromText(SegmentKind.Document, title, Json.String(source, "data"));
-                return text;
-            case "content" when Json.TryArray(source, "content", out var parts):
-                var group = new ContextSegment { Kind = SegmentKind.Document, Label = title };
-                foreach (var part in parts.EnumerateArray())
-                {
-                    group.Children.Add(ParseBlock(part, toolNames));
-                }
-
-                return group;
-            default:
-                return new ContextSegment
-                {
-                    Kind = SegmentKind.Document, Label = title, FixedTokens = 0, Note = "size unknown",
-                    Json = Json.Format(source),
-                };
         }
     }
 }

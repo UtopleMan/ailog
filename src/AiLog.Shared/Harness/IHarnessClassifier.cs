@@ -9,17 +9,12 @@ namespace AiLog.Shared.Harness;
 /// </summary>
 public interface IHarnessClassifier
 {
+    /// <summary>Display name, e.g. "Claude Code".</summary>
     string Name { get; }
 
+    /// <summary>Recognises the harness that sent the exchange, typically by its User-Agent.</summary>
     bool Matches(ExchangeLog log);
 
     /// <summary>Re-categorises and may split or regroup segments of a parsed request.</summary>
     void Classify(ContextSegment request);
-}
-
-public static class HarnessRegistry
-{
-    public static IReadOnlyList<IHarnessClassifier> Classifiers { get; } = [new ClaudeCodeClassifier()];
-
-    public static IHarnessClassifier? Match(ExchangeLog log) => Classifiers.FirstOrDefault(c => c.Matches(log));
 }

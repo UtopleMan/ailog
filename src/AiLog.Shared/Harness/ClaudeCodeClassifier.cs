@@ -13,188 +13,223 @@ namespace AiLog.Shared.Harness;
 /// </summary>
 public sealed partial class ClaudeCodeClassifier : IHarnessClassifier
 {
+    private const string CliUserAgentPrefix = "claude-cli/";
+    private const string UserAgentMarker = "claude-code";
     private const string ContextReminderLead = "As you answer the user's questions, you can use the following context";
     private const string SkillBaseDirectory = "Base directory for this skill:";
+    private const string SkillTool = "Skill";
+    private const string SkillCallsItem = "Skill calls";
+    private const string SkillResultsItem = "Skill results";
     private const string McpPrefix = "mcp__";
+    private const string McpSeparator = "__";
+    private const string ClaudeMdSection = "claudeMd";
+    private const string ClaudeMdItem = "CLAUDE.md";
+    private const string UntitledContextSection = "context";
+    private const string PlainTextLabel = "text";
+    private const int ItemPreviewLength = 60;
 
-    /// <summary>Section openers: (line prefix, category, breakdown item). Item null means "use the heading".</summary>
-    private static readonly (string Prefix, string Category, string? Item)[] LeadIns =
+    /// <summary>Section openers. A null item means "use the heading".</summary>
+    private static readonly LeadIn[] leadIns =
     [
-        ("x-anthropic-billing-header", Categories.SystemPrompt, "Billing header"),
-        ("You are Claude Code", Categories.SystemPrompt, "Identity"),
-        ("# Environment", Categories.Environment, "Environment"),
-        ("You are powered by the model", Categories.Environment, "Model"),
-        ("Today's date is", Categories.Environment, "Date"),
-        ("Available agent types", Categories.Agents, "Agent types"),
-        ("The following skills are available", Categories.Skills, "Skills list"),
-        ("# MCP Server Instructions", Categories.McpInstructions, "MCP server instructions"),
-        ("# Memory", Categories.Memory, "Memory"),
-        ("# auto memory", Categories.Memory, "Memory"),
-        ("# claudeMd", Categories.Memory, "CLAUDE.md"),
-        ("While auto mode is active", Categories.SystemPrompt, "Auto mode"),
+        new("x-anthropic-billing-header", Categories.SystemPrompt, "Billing header"),
+        new("You are Claude Code", Categories.SystemPrompt, "Identity"),
+        new("# Environment", Categories.Environment, "Environment"),
+        new("You are powered by the model", Categories.Environment, "Model"),
+        new("Today's date is", Categories.Environment, "Date"),
+        new("Available agent types", Categories.Agents, "Agent types"),
+        new("The following skills are available", Categories.Skills, "Skills list"),
+        new("# MCP Server Instructions", Categories.McpInstructions, "MCP server instructions"),
+        new("# Memory", Categories.Memory, "Memory"),
+        new("# auto memory", Categories.Memory, "Memory"),
+        new("# claudeMd", Categories.Memory, ClaudeMdItem),
+        new("While auto mode is active", Categories.SystemPrompt, "Auto mode"),
     ];
 
+    /// <inheritdoc/>
     public string Name => "Claude Code";
 
+    /// <inheritdoc/>
     public bool Matches(ExchangeLog log) =>
         Headers.Get(log.Request.Headers, "user-agent") is { } agent
-        && (agent.StartsWith("claude-cli/", StringComparison.OrdinalIgnoreCase) || agent.Contains("claude-code", StringComparison.OrdinalIgnoreCase));
+        && (agent.StartsWith(CliUserAgentPrefix, StringComparison.OrdinalIgnoreCase)
+            || agent.Contains(UserAgentMarker, StringComparison.OrdinalIgnoreCase));
 
+    /// <inheritdoc/>
     public void Classify(ContextSegment request)
     {
-        foreach (var top in request.Children)
+        foreach (ContextSegment group in request.Children)
         {
-            switch (top.Label)
+            switch (group.Label)
             {
                 case ProviderAdapter.SystemGroup:
-                    foreach (var leaf in top.Leaves().Where(l => l.Kind == SegmentKind.Text).ToList())
-                    {
-                        SplitPrompt(leaf, Categories.SystemPrompt);
-                    }
-
+                    ClassifySystem(group);
                     break;
                 case ProviderAdapter.ToolsGroup:
-                    GroupTools(top);
+                    GroupTools(group);
                     break;
                 case ProviderAdapter.MessagesGroup:
-                    foreach (var message in top.Children)
-                    {
-                        ClassifyMessage(message);
-                    }
-
+                    ClassifyMessages(group);
                     break;
             }
+        }
+    }
+
+    private static void ClassifySystem(ContextSegment system)
+    {
+        foreach (ContextSegment leaf in system.Leaves().Where(l => l.Kind == SegmentKind.Text).ToList())
+        {
+            SplitPrompt(leaf);
+        }
+    }
+
+    private static void ClassifyMessages(ContextSegment messages)
+    {
+        foreach (ContextSegment message in messages.Children)
+        {
+            ClassifyMessage(message);
         }
     }
 
     private static void ClassifyMessage(ContextSegment message)
     {
-        foreach (var leaf in message.Leaves().ToList())
+        foreach (ContextSegment leaf in message.Leaves().ToList())
         {
-            switch (leaf.Kind)
-            {
-                case SegmentKind.Text when message.Role == "system":
-                    SplitPrompt(leaf, Categories.SystemPrompt);
-                    break;
-                case SegmentKind.Text when message.Role == "user" && leaf.Category == Categories.UserMessages:
-                    SplitUserText(leaf, message.Label);
-                    break;
-                case SegmentKind.ToolCall when leaf.Label == "Skill":
-                    leaf.Category = Categories.Skills;
-                    leaf.Item = SkillName(leaf) ?? "Skill calls";
-                    break;
-                case SegmentKind.ToolResult when leaf.Label == "Skill":
-                    leaf.Category = Categories.Skills;
-                    leaf.Item = "Skill results";
-                    break;
-            }
+            ClassifyLeaf(leaf, message);
         }
 
         // Results of the Skill tool with structured content.
-        foreach (var result in message.Children.Where(c => c.Kind == SegmentKind.ToolResult && c.Label == "Skill"))
+        foreach (ContextSegment result in message.Children.Where(c => c.Kind == SegmentKind.ToolResult && c.Label == SkillTool))
         {
-            foreach (var leaf in result.Leaves())
+            foreach (ContextSegment leaf in result.Leaves())
             {
-                leaf.Category = Categories.Skills;
-                leaf.Item = "Skill results";
+                MarkSkill(leaf, SkillResultsItem);
             }
         }
     }
 
-    /// <summary>System text: sections start at "# " headings and known lead-in paragraphs.</summary>
-    private static void SplitPrompt(ContextSegment leaf, string fallbackCategory)
+    private static void ClassifyLeaf(ContextSegment leaf, ContextSegment message)
     {
-        var sections = TextSections.Split(leaf.Text ?? "", line => TextSections.IsHeading(line) || LeadIn(line) is not null, needsBlankLineBefore: true);
-        Replace(leaf, sections.Select(s =>
+        switch (leaf.Kind)
         {
-            var (category, item) = LeadIn(s.FirstLine) is { } match
-                ? (match.Category, match.Item ?? TextSections.HeadingText(s.FirstLine))
-                : (fallbackCategory, TextSections.IsHeading(s.FirstLine) ? TextSections.HeadingText(s.FirstLine) : Shorten(s.FirstLine, 60));
-            return Section(s.Text, item, category, item);
-        }).ToList());
+            case SegmentKind.Text when message.Role == "system":
+                SplitPrompt(leaf);
+                break;
+            case SegmentKind.Text when message.Role == "user" && leaf.Category == Categories.UserMessages:
+                SplitUserText(leaf, message.Label);
+                break;
+            case SegmentKind.ToolCall when leaf.Label == SkillTool:
+                MarkSkill(leaf, SkillName(leaf) ?? SkillCallsItem);
+                break;
+            case SegmentKind.ToolResult when leaf.Label == SkillTool:
+                MarkSkill(leaf, SkillResultsItem);
+                break;
+        }
+    }
+
+    private static void MarkSkill(ContextSegment leaf, string item)
+    {
+        leaf.Category = Categories.Skills;
+        leaf.Item = item;
+    }
+
+    /// <summary>System text: sections start at "# " headings and known lead-in paragraphs.</summary>
+    private static void SplitPrompt(ContextSegment leaf)
+    {
+        List<TextSection> sections = TextSections.Split(leaf.Text ?? "", IsPromptBoundary, needsBlankLineBefore: true);
+        Replace(leaf, sections.Select(PromptSection).ToList());
+    }
+
+    private static bool IsPromptBoundary(string line) => TextSections.IsHeading(line) || FindLeadIn(line) is not null;
+
+    private static ContextSegment PromptSection(TextSection section)
+    {
+        string firstLine = section.FirstLine;
+        Placement placement = FindLeadIn(firstLine) is { } leadIn
+            ? leadIn.PlacementFor(firstLine)
+            : new Placement(Categories.SystemPrompt, TextSections.IsHeading(firstLine) ? TextSections.HeadingText(firstLine) : firstLine.Shorten(ItemPreviewLength));
+        return Section(section.Text, placement.Item, placement);
     }
 
     /// <summary>User text: separates &lt;system-reminder&gt; blocks and injected skill bodies from what the user typed.</summary>
     private static void SplitUserText(ContextSegment leaf, string messageLabel)
     {
-        var text = leaf.Text ?? "";
+        string text = leaf.Text ?? "";
         var parts = new List<ContextSegment>();
-        var position = 0;
+        int position = 0;
         foreach (Match reminder in Reminder().Matches(text))
         {
-            AddTyped(text[position..reminder.Index]);
+            parts.AddRange(TypedSections(text[position..reminder.Index], messageLabel));
             parts.AddRange(ClassifyReminder(reminder.Value, reminder.Groups[1].Value));
             position = reminder.Index + reminder.Length;
         }
 
-        AddTyped(text[position..]);
+        parts.AddRange(TypedSections(text[position..], messageLabel));
         Replace(leaf, parts);
-
-        void AddTyped(string typed)
-        {
-            typed = typed.Trim('\n');
-            if (typed.Trim().Length == 0)
-            {
-                return;
-            }
-
-            if (typed.StartsWith(SkillBaseDirectory, StringComparison.Ordinal))
-            {
-                var path = typed[SkillBaseDirectory.Length..].Split('\n')[0].Trim().TrimEnd('/');
-                var skill = path[(path.LastIndexOf('/') + 1)..];
-                parts.Add(Section(typed, $"skill: {skill}", Categories.Skills, skill));
-            }
-            else
-            {
-                parts.Add(Section(typed, "text", Categories.UserMessages, messageLabel));
-            }
-        }
     }
 
-    private static IEnumerable<ContextSegment> ClassifyReminder(string whole, string inner)
+    /// <summary>What the user typed between reminders, unless it is blank; skill bodies count as skills.</summary>
+    private static IEnumerable<ContextSegment> TypedSections(string typed, string messageLabel)
     {
-        // The context reminder holds "# name" sections: claudeMd, userEmail, gitStatus, currentDate...
-        if (inner.Contains(ContextReminderLead, StringComparison.Ordinal))
+        typed = typed.Trim('\n');
+        if (typed.Trim().Length == 0)
         {
-            foreach (var section in TextSections.Split(whole, TextSections.IsHeading, needsBlankLineBefore: false))
-            {
-                var name = TextSections.IsHeading(section.FirstLine) ? TextSections.HeadingText(section.FirstLine) : "context";
-                var isMemory = name.Contains("claudeMd", StringComparison.OrdinalIgnoreCase) || name.Contains("memory", StringComparison.OrdinalIgnoreCase);
-                yield return Section(section.Text, $"reminder: {name}",
-                    isMemory ? Categories.Memory : Categories.SessionContext,
-                    name.Equals("claudeMd", StringComparison.OrdinalIgnoreCase) ? "CLAUDE.md" : name);
-            }
-
             yield break;
         }
 
-        var firstLine = inner.Split('\n').Select(l => l.Trim()).FirstOrDefault(l => l.Length > 0) ?? "";
-        var (category, item) = LeadIn(firstLine) is { } match
-            ? (match.Category, match.Item ?? TextSections.HeadingText(firstLine))
-            : (Categories.Reminders, Shorten(firstLine, 60));
-        yield return Section(whole, $"reminder: {item}", category, item);
+        if (typed.StartsWith(SkillBaseDirectory, StringComparison.Ordinal))
+        {
+            string skill = SkillFromBaseDirectory(typed);
+            yield return Section(typed, $"skill: {skill}", new Placement(Categories.Skills, skill));
+        }
+        else
+        {
+            yield return Section(typed, PlainTextLabel, new Placement(Categories.UserMessages, messageLabel));
+        }
+    }
+
+    private static string SkillFromBaseDirectory(string skillBody)
+    {
+        string path = skillBody[SkillBaseDirectory.Length..].Split('\n')[0].Trim().TrimEnd('/');
+        return path[(path.LastIndexOf('/') + 1)..];
+    }
+
+    private static IEnumerable<ContextSegment> ClassifyReminder(string whole, string inner) =>
+        inner.Contains(ContextReminderLead, StringComparison.Ordinal)
+            ? ContextReminderSections(whole)
+            : [SingleReminder(whole, inner)];
+
+    /// <summary>The context reminder holds "# name" sections: claudeMd, userEmail, gitStatus, currentDate...</summary>
+    private static IEnumerable<ContextSegment> ContextReminderSections(string reminder)
+    {
+        foreach (TextSection section in TextSections.Split(reminder, TextSections.IsHeading, needsBlankLineBefore: false))
+        {
+            string name = TextSections.IsHeading(section.FirstLine) ? TextSections.HeadingText(section.FirstLine) : UntitledContextSection;
+            bool isMemory = name.Contains(ClaudeMdSection, StringComparison.OrdinalIgnoreCase) || name.Contains("memory", StringComparison.OrdinalIgnoreCase);
+            string category = isMemory ? Categories.Memory : Categories.SessionContext;
+            string item = name.Equals(ClaudeMdSection, StringComparison.OrdinalIgnoreCase) ? ClaudeMdItem : name;
+            yield return Section(section.Text, $"reminder: {name}", new Placement(category, item));
+        }
+    }
+
+    private static ContextSegment SingleReminder(string whole, string inner)
+    {
+        string firstLine = inner.Split('\n').Select(l => l.Trim()).FirstOrDefault(l => l.Length > 0) ?? "";
+        Placement placement = FindLeadIn(firstLine) is { } leadIn
+            ? leadIn.PlacementFor(firstLine)
+            : new Placement(Categories.Reminders, firstLine.Shorten(ItemPreviewLength));
+        return Section(whole, $"reminder: {placement.Item}", placement);
     }
 
     /// <summary>Built-in tools stay together; MCP tools ("mcp__server__tool") are grouped per server.</summary>
     private static void GroupTools(ContextSegment tools)
     {
-        var builtIn = ContextSegment.Group("Built-in");
+        ContextSegment builtIn = ContextSegment.Group("Built-in");
         var servers = new Dictionary<string, ContextSegment>(StringComparer.Ordinal);
-        foreach (var tool in tools.Children)
+        foreach (ContextSegment tool in tools.Children)
         {
-            if (tool.Label.StartsWith(McpPrefix, StringComparison.Ordinal))
+            if (McpServer(tool.Label) is { } server)
             {
-                var rest = tool.Label[McpPrefix.Length..];
-                var separator = rest.IndexOf("__", StringComparison.Ordinal);
-                var server = separator < 0 ? rest : rest[..separator];
-                if (!servers.TryGetValue(server, out var group))
-                {
-                    servers[server] = group = ContextSegment.Group($"MCP: {server}");
-                }
-
-                tool.Category = Categories.McpTools;
-                tool.Item = server;
-                group.Children.Add(tool);
+                AddToServerGroup(servers, tool, server);
             }
             else
             {
@@ -209,24 +244,38 @@ public sealed partial class ClaudeCodeClassifier : IHarnessClassifier
         }
 
         tools.Children = [builtIn, .. servers.Values];
-        foreach (var group in tools.Children)
+        foreach (ContextSegment group in tools.Children)
         {
             group.Label += $" ({group.Children.Count})";
         }
     }
 
-    private static (string Category, string? Item)? LeadIn(string line)
+    private static string? McpServer(string toolName)
     {
-        foreach (var (prefix, category, item) in LeadIns)
+        if (!toolName.StartsWith(McpPrefix, StringComparison.Ordinal))
         {
-            if (line.StartsWith(prefix, StringComparison.Ordinal))
-            {
-                return (category, item);
-            }
+            return null;
         }
 
-        return null;
+        string rest = toolName[McpPrefix.Length..];
+        int separator = rest.IndexOf(McpSeparator, StringComparison.Ordinal);
+        return separator < 0 ? rest : rest[..separator];
     }
+
+    private static void AddToServerGroup(Dictionary<string, ContextSegment> servers, ContextSegment tool, string server)
+    {
+        if (!servers.TryGetValue(server, out ContextSegment? group))
+        {
+            servers[server] = group = ContextSegment.Group($"MCP: {server}");
+        }
+
+        tool.Category = Categories.McpTools;
+        tool.Item = server;
+        group.Children.Add(tool);
+    }
+
+    private static LeadIn? FindLeadIn(string line) =>
+        leadIns.FirstOrDefault(leadIn => line.StartsWith(leadIn.Prefix, StringComparison.Ordinal));
 
     /// <summary>Turns a text leaf into a parent of its sections; a single section just relabels the leaf.</summary>
     private static void Replace(ContextSegment leaf, List<ContextSegment> sections)
@@ -238,17 +287,11 @@ public sealed partial class ClaudeCodeClassifier : IHarnessClassifier
 
         if (sections.Count == 1)
         {
-            leaf.Category = sections[0].Category;
-            leaf.Item = sections[0].Item;
-            if (leaf.Label == "text")
-            {
-                leaf.Label = sections[0].Label;
-            }
-
+            Relabel(leaf, sections[0]);
             return;
         }
 
-        foreach (var section in sections)
+        foreach (ContextSegment section in sections)
         {
             section.Role = leaf.Role;
         }
@@ -258,19 +301,36 @@ public sealed partial class ClaudeCodeClassifier : IHarnessClassifier
         leaf.Weight = 0;
     }
 
-    private static ContextSegment Section(string text, string label, string category, string item)
+    private static void Relabel(ContextSegment leaf, ContextSegment onlySection)
     {
-        var section = ContextSegment.FromText(SegmentKind.Text, label, text);
-        section.Category = category;
-        section.Item = item;
+        leaf.Category = onlySection.Category;
+        leaf.Item = onlySection.Item;
+        if (leaf.Label == PlainTextLabel)
+        {
+            leaf.Label = onlySection.Label;
+        }
+    }
+
+    private static ContextSegment Section(string text, string label, Placement placement)
+    {
+        ContextSegment section = ContextSegment.FromText(SegmentKind.Text, label, text);
+        section.Category = placement.Category;
+        section.Item = placement.Item;
         return section;
     }
 
     private static string? SkillName(ContextSegment call) =>
-        call.Json is { } json && AiLog.Shared.Json.TryParse(json) is { } input ? AiLog.Shared.Json.String(input, "skill") : null;
-
-    private static string Shorten(string text, int max) => text.Length <= max ? text : text[..max] + "…";
+        call.Json is { } json && Json.TryParse(json) is { } input ? Json.String(input, "skill") : null;
 
     [GeneratedRegex(@"<system-reminder>\s*(.*?)\s*</system-reminder>", RegexOptions.Singleline)]
     private static partial Regex Reminder();
+
+    /// <summary>Where a section lands in the breakdown.</summary>
+    private sealed record Placement(string Category, string Item);
+
+    /// <summary>A line prefix that opens a known section. A null item means "use the heading".</summary>
+    private sealed record LeadIn(string Prefix, string Category, string? Item)
+    {
+        public Placement PlacementFor(string firstLine) => new(Category, Item ?? TextSections.HeadingText(firstLine));
+    }
 }

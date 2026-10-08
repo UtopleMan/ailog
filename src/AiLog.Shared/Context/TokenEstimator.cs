@@ -7,46 +7,47 @@ namespace AiLog.Shared.Context;
 /// </summary>
 public static class TokenEstimator
 {
+    /// <summary>Characters per token assumed when there is no real count to calibrate against.</summary>
     public const double CharsPerToken = 4;
 
+    /// <summary>Sets <see cref="ContextSegment.Tokens"/> on every segment of the tree.</summary>
     /// <returns>True when the tree was calibrated against <paramref name="actualTotal"/>.</returns>
     public static bool Estimate(ContextSegment root, long? actualTotal)
     {
-        var leaves = root.Leaves().ToList();
-        var raw = leaves.Select(l => l.FixedTokens is { } fixedTokens ? (double)fixedTokens : l.Weight / CharsPerToken).ToArray();
+        List<ContextSegment> leaves = root.Leaves().ToList();
+        double[] raw = leaves.Select(RawEstimate).ToArray();
+        long total = actualTotal ?? 0;
+        bool isCalibrated = total > 0 && raw.Sum() > 0;
 
-        var calibrated = actualTotal is > 0 && raw.Sum() > 0;
-        double[] shares;
-        if (!calibrated)
+        long[] tokens = isCalibrated
+            ? LargestRemainder(CalibratedShares(leaves, total), total)
+            : raw.Select(r => (long)Math.Ceiling(r)).ToArray();
+        for (int i = 0; i < leaves.Count; i++)
         {
-            shares = raw;
-        }
-        else
-        {
-            var total = (double)actualTotal!.Value;
-            var fixedSum = leaves.Where(l => l.FixedTokens is not null).Sum(l => (double)l.FixedTokens!.Value);
-            var textWeight = leaves.Where(l => l.FixedTokens is null).Sum(l => (double)l.Weight);
-            if (fixedSum <= total && textWeight > 0)
-            {
-                var perChar = (total - fixedSum) / textWeight;
-                shares = leaves.Select(l => l.FixedTokens is { } f ? f : l.Weight * perChar).ToArray();
-            }
-            else
-            {
-                // Media alone exceeds the real count (or there is no text): scale everything down together.
-                var factor = total / raw.Sum();
-                shares = raw.Select(r => r * factor).ToArray();
-            }
-        }
-
-        var rounded = calibrated ? LargestRemainder(shares, actualTotal!.Value) : shares.Select(s => (long)Math.Ceiling(s)).ToArray();
-        for (var i = 0; i < leaves.Count; i++)
-        {
-            leaves[i].Tokens = rounded[i];
+            leaves[i].Tokens = tokens[i];
         }
 
         SumParents(root);
-        return calibrated;
+        return isCalibrated;
+    }
+
+    private static double RawEstimate(ContextSegment leaf) =>
+        leaf.FixedTokens is { } fixedTokens ? fixedTokens : leaf.Weight / CharsPerToken;
+
+    private static double[] CalibratedShares(List<ContextSegment> leaves, long total)
+    {
+        double fixedSum = leaves.Where(l => l.FixedTokens is not null).Sum(l => (double)l.FixedTokens!.Value);
+        double textWeight = leaves.Where(l => l.FixedTokens is null).Sum(l => (double)l.Weight);
+        if (fixedSum <= total && textWeight > 0)
+        {
+            double perChar = (total - fixedSum) / textWeight;
+            return leaves.Select(l => l.FixedTokens is { } fixedTokens ? fixedTokens : l.Weight * perChar).ToArray();
+        }
+
+        // Media alone exceeds the real count (or there is no text): scale everything down together.
+        double[] raw = leaves.Select(RawEstimate).ToArray();
+        double factor = total / raw.Sum();
+        return raw.Select(r => r * factor).ToArray();
     }
 
     private static long SumParents(ContextSegment segment)
@@ -62,9 +63,12 @@ public static class TokenEstimator
     /// <summary>Rounds so the integers add up exactly to <paramref name="total"/>.</summary>
     private static long[] LargestRemainder(double[] shares, long total)
     {
-        var result = shares.Select(s => (long)Math.Floor(s)).ToArray();
-        var missing = total - result.Sum();
-        foreach (var i in Enumerable.Range(0, shares.Length).OrderByDescending(i => shares[i] - Math.Floor(shares[i])).Take((int)Math.Max(0, missing)))
+        long[] result = shares.Select(s => (long)Math.Floor(s)).ToArray();
+        long missing = total - result.Sum();
+        IEnumerable<int> largestRemainders = Enumerable.Range(0, shares.Length)
+            .OrderByDescending(i => shares[i] - Math.Floor(shares[i]))
+            .Take((int)Math.Max(0, missing));
+        foreach (int i in largestRemainders)
         {
             result[i]++;
         }

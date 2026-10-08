@@ -2,18 +2,37 @@ using System.Text.Json;
 
 namespace AiLog.Shared.Context;
 
+/// <summary>What a <see cref="ContextSegment"/> holds.</summary>
 public enum SegmentKind
 {
     /// <summary>A structural container: System, Tools, Messages, Output or a classifier grouping.</summary>
     Group,
+
+    /// <summary>One conversation turn; its children are the blocks.</summary>
     Message,
+
+    /// <summary>Prose.</summary>
     Text,
+
+    /// <summary>Reasoning, visible or encrypted.</summary>
     Thinking,
+
+    /// <summary>A tool's schema as offered to the model.</summary>
     ToolDefinition,
+
+    /// <summary>A tool invocation by the model.</summary>
     ToolCall,
+
+    /// <summary>The answer to a tool call.</summary>
     ToolResult,
+
+    /// <summary>An image attachment.</summary>
     Image,
+
+    /// <summary>A document attachment.</summary>
     Document,
+
+    /// <summary>A block of a type the adapter does not know.</summary>
     Other,
 }
 
@@ -23,6 +42,9 @@ public enum SegmentKind
 /// </summary>
 public sealed class ContextSegment
 {
+    private const int DefaultPreviewLength = 160;
+
+    /// <summary>What the segment holds.</summary>
     public required SegmentKind Kind { get; init; }
 
     /// <summary>Shown in the conversation view, e.g. "#3 user", "Bash", "# Environment".</summary>
@@ -49,6 +71,7 @@ public sealed class ContextSegment
     /// <summary>Set for images and documents, whose cost is not proportional to their encoded size.</summary>
     public long? FixedTokens { get; set; }
 
+    /// <summary>A short remark shown next to the segment, e.g. how its size was estimated.</summary>
     public string? Note { get; set; }
 
     /// <summary>The block carries a prompt-cache breakpoint (Anthropic <c>cache_control</c>).</summary>
@@ -63,45 +86,55 @@ public sealed class ContextSegment
     /// <summary>Unique within the analysis and stable for the same file; ancestors' ids are its '-'-separated prefixes.</summary>
     public string Id { get; set; } = "";
 
+    /// <summary>The nested segments; empty for leaves.</summary>
     public List<ContextSegment> Children { get; set; } = [];
 
+    /// <summary>True when the segment has no children.</summary>
     public bool IsLeaf => Children.Count == 0;
 
+    /// <summary>The item this segment is summed under in the breakdown.</summary>
     public string BreakdownItem => Item ?? Label;
 
+    /// <summary>A structural container.</summary>
     public static ContextSegment Group(string label, string? category = null) =>
         new() { Kind = SegmentKind.Group, Label = label, Category = category };
 
+    /// <summary>A leaf holding prose, weighted by its length.</summary>
     public static ContextSegment FromText(SegmentKind kind, string label, string? text) =>
         new() { Kind = kind, Label = label, Text = text ?? "", Weight = text?.Length ?? 0 };
 
+    /// <summary>A leaf holding structured content, weighted by its compact JSON length.</summary>
     public static ContextSegment FromJson(SegmentKind kind, string label, JsonElement json)
     {
-        var compact = AiLog.Shared.Json.Format(json, indented: false);
+        string compact = AiLog.Shared.Json.Format(json, indented: false);
         return new() { Kind = kind, Label = label, Json = AiLog.Shared.Json.Format(json), Weight = compact.Length };
     }
 
+    /// <summary>Every segment below this one, depth first.</summary>
     public IEnumerable<ContextSegment> Descendants()
     {
-        foreach (var child in Children)
+        foreach (ContextSegment child in Children)
         {
             yield return child;
-            foreach (var descendant in child.Descendants())
+            foreach (ContextSegment descendant in child.Descendants())
             {
                 yield return descendant;
             }
         }
     }
 
+    /// <summary>The leaves below this segment, or the segment itself when it is a leaf.</summary>
     public IEnumerable<ContextSegment> Leaves() => IsLeaf ? [this] : Descendants().Where(d => d.IsLeaf);
 
     /// <summary>The first line of content, for collapsed rows.</summary>
-    public string Preview(int max = 160)
+    public string Preview(int max = DefaultPreviewLength)
     {
-        var source = Text ?? Json ?? Leaves().Select(l => l.Text ?? l.Json).FirstOrDefault(t => !string.IsNullOrWhiteSpace(t)) ?? "";
-        // Skips lines like "{" and "<system-reminder>" so JSON and tagged text show something meaningful.
-        var line = source.Split('\n').Select(l => l.Trim())
-            .FirstOrDefault(l => l.Any(char.IsLetterOrDigit) && !(l.StartsWith('<') && l.EndsWith('>'))) ?? "";
-        return line.Length <= max ? line : line[..max] + "…";
+        string source = Text ?? Json ?? Leaves().Select(l => l.Text ?? l.Json).FirstOrDefault(t => !string.IsNullOrWhiteSpace(t)) ?? "";
+        string line = source.Split('\n').Select(l => l.Trim()).FirstOrDefault(IsMeaningful) ?? "";
+        return line.Shorten(max);
     }
+
+    /// <summary>Skips lines like "{" and "&lt;system-reminder&gt;" so JSON and tagged text show something meaningful.</summary>
+    private static bool IsMeaningful(string line) =>
+        line.Any(char.IsLetterOrDigit) && !(line.StartsWith('<') && line.EndsWith('>'));
 }

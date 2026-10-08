@@ -8,7 +8,7 @@ else
 {
     <table class="kv">
         <tbody>
-            @foreach (var (name, value) in Headers.OrderBy(h => h.Key, StringComparer.OrdinalIgnoreCase))
+            @foreach ((string name, string value) in Headers.OrderBy(h => h.Key, StringComparer.OrdinalIgnoreCase))
             {
                 <tr>
                     <th class="mono">@name</th>

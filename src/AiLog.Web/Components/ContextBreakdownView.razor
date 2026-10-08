@@ -1,9 +1,10 @@
 @* Stacked composition bar plus a category → item → block tree of estimated tokens. *@
+@using System.Globalization
 
 @if (Total > 0)
 {
     <div class="stack-bar">
-        @foreach (var category in Categories.Where(c => c.Tokens > 0))
+        @foreach (BreakdownCategory category in Categories.Where(c => c.Tokens > 0))
         {
             <span style="width:@Percent(category.Tokens, Total);background:@CategoryColors.For(category.Name)"
                   title="@($"{category.Name}: ≈{Display.ExactTokens(category.Tokens)} tokens")"></span>
@@ -13,9 +14,9 @@
 
 <table class="breakdown">
     <tbody>
-        @foreach (var category in Categories)
+        @foreach (BreakdownCategory category in Categories)
         {
-            var categoryOpen = !_collapsedCategories.Contains(category.Name);
+            bool categoryOpen = !collapsedCategories.Contains(category.Name);
             <tr class="bd-category" @onclick="() => ToggleCategory(category.Name)">
                 <td class="bd-name">
                     <span class="chev">@(categoryOpen ? "▾" : "▸")</span>
@@ -28,11 +29,11 @@
 
             @if (categoryOpen)
             {
-                var maxItem = category.Items.Max(i => i.Tokens);
-                @foreach (var item in category.Items)
+                long maxItem = category.Items.Max(i => i.Tokens);
+                @foreach (BreakdownItem item in category.Items)
                 {
-                    var key = category.Name + "\n" + item.Label;
-                    var itemOpen = _expandedItems.Contains(key);
+                    string key = category.Name + "\n" + item.Label;
+                    bool itemOpen = expandedItems.Contains(key);
                     <tr class="bd-item" @onclick="() => ToggleItem(key, item)">
                         <td class="bd-name">
                             <span class="chev">@(item.Segments.Count == 1 ? "" : itemOpen ? "▾" : "▸")</span>
@@ -48,10 +49,10 @@
 
                     @if (itemOpen && item.Segments.Count > 1)
                     {
-                        @foreach (var segment in item.Segments)
+                        @foreach (ContextSegment segment in item.Segments)
                         {
                             <tr class="bd-block" @onclick="() => OnSelect.InvokeAsync(segment)">
-                                <td class="bd-name"><span class="bd-label" title="@segment.Preview(400)">@segment.Label · @segment.Preview(80)</span></td>
+                                <td class="bd-name"><span class="bd-label" title="@segment.Preview(TooltipPreviewLength)">@segment.Label · @segment.Preview(RowPreviewLength)</span></td>
                                 <td></td>
                                 <td class="num mono">@Display.Tokens(segment.Tokens)</td>
                             </tr>
@@ -64,24 +65,29 @@
 </table>
 
 @code {
-    [Parameter, EditorRequired] public IReadOnlyList<BreakdownCategory> Categories { get; set; } = [];
-    [Parameter] public EventCallback<ContextSegment> OnSelect { get; set; }
+    private const int TooltipPreviewLength = 400;
+    private const int RowPreviewLength = 80;
+    private const double PercentScale = 100.0;
 
-    private readonly HashSet<string> _collapsedCategories = new(StringComparer.Ordinal);
-    private readonly HashSet<string> _expandedItems = new(StringComparer.Ordinal);
+    private readonly HashSet<string> collapsedCategories = new(StringComparer.Ordinal);
+    private readonly HashSet<string> expandedItems = new(StringComparer.Ordinal);
+
+    [Parameter, EditorRequired] public IReadOnlyList<BreakdownCategory> Categories { get; set; } = [];
+
+    [Parameter] public EventCallback<ContextSegment> OnSelect { get; set; }
 
     private long Total => Categories.Sum(c => c.Tokens);
 
     private long MaxCategory => Categories.Count == 0 ? 0 : Categories.Max(c => c.Tokens);
 
     private static string Percent(long part, long whole) =>
-        whole <= 0 ? "0%" : (100.0 * part / whole).ToString("0.###", System.Globalization.CultureInfo.InvariantCulture) + "%";
+        whole <= 0 ? "0%" : (PercentScale * part / whole).ToString("0.###", CultureInfo.InvariantCulture) + "%";
 
     private void ToggleCategory(string name)
     {
-        if (!_collapsedCategories.Remove(name))
+        if (!collapsedCategories.Remove(name))
         {
-            _collapsedCategories.Add(name);
+            collapsedCategories.Add(name);
         }
     }
 
@@ -92,9 +98,9 @@
         {
             await OnSelect.InvokeAsync(item.Segments[0]);
         }
-        else if (!_expandedItems.Remove(key))
+        else if (!expandedItems.Remove(key))
         {
-            _expandedItems.Add(key);
+            expandedItems.Add(key);
         }
     }
 }

@@ -1,0 +1,14 @@
+@* Top-level rows of a request or response segment tree. *@
+
+<div class="tree">
+    @foreach (ContextSegment segment in Segments)
+    {
+        <SegmentView @key="segment.Id" Segment="segment" State="State" />
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public IEnumerable<ContextSegment> Segments { get; set; } = [];
+
+    [Parameter, EditorRequired] public SegmentViewState State { get; set; } = null!;
+}

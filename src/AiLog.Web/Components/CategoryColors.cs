@@ -2,8 +2,12 @@ using AiLog.Shared.Context;
 
 namespace AiLog.Web.Components;
 
+/// <summary>Stable colours for breakdown categories.</summary>
 public static class CategoryColors
 {
+    private const int HashSeed = 17;
+    private const int HashMultiplier = 31;
+
     private static readonly Dictionary<string, string> Known = new(StringComparer.Ordinal)
     {
         [Categories.SystemPrompt] = "#6366f1",
@@ -30,15 +34,16 @@ public static class CategoryColors
 
     private static readonly string[] Fallback = ["#78716c", "#0d9488", "#7c3aed", "#be123c", "#4d7c0f"];
 
+    /// <summary>The CSS colour for a category; unknown categories get a stable fallback.</summary>
     public static string For(string category) =>
-        Known.TryGetValue(category, out var color) ? color : Fallback[(int)((uint)StableHash(category) % Fallback.Length)];
+        Known.TryGetValue(category, out string? color) ? color : Fallback[(int)((uint)StableHash(category) % Fallback.Length)];
 
     private static int StableHash(string text)
     {
-        var hash = 17;
-        foreach (var c in text)
+        int hash = HashSeed;
+        foreach (char character in text)
         {
-            hash = hash * 31 + c;
+            hash = hash * HashMultiplier + character;
         }
 
         return hash;

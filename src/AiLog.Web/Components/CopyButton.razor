@@ -1,0 +1,19 @@
+@* Copies the given text to the clipboard. *@
+@implements IDisposable
+@inject IJSRuntime JS
+
+<button class="link-button" @onclick="CopyAsync">Copy</button>
+
+@code {
+    private readonly CancellationTokenSource disposed = new();
+
+    [Parameter, EditorRequired] public string Text { get; set; } = "";
+
+    public void Dispose()
+    {
+        disposed.Cancel();
+        disposed.Dispose();
+    }
+
+    private async Task CopyAsync() => await JS.InvokeVoidAsync("navigator.clipboard.writeText", disposed.Token, Text);
+}

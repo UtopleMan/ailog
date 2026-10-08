@@ -1,0 +1,31 @@
+@* Estimated token breakdown of the request context and the model's output. *@
+
+@if (Analysis.Request is { } request && Analysis.InputBreakdown.Count > 0)
+{
+    <BbCard Class="detail-card">
+        <BbCardHeader>
+            <BbCardTitle>Context</BbCardTitle>
+            <BbCardDescription>
+                ≈ estimated per part.
+                @(Analysis.InputCalibrated
+                    ? $"Parts are scaled to add up to the real {Display.ExactTokens(request.Tokens)} input tokens; images and PDFs use their own estimate."
+                    : "No input token count in the response, so parts are characters / 4 (uncalibrated).")
+                Shaded rows in the conversation are inside the cached prefix.
+            </BbCardDescription>
+        </BbCardHeader>
+        <BbCardContent>
+            <ContextBreakdownView Categories="Analysis.InputBreakdown" OnSelect="OnSelect" />
+            @if (Analysis.OutputBreakdown.Count > 0)
+            {
+                <h4 class="sub-heading">Output @(Analysis.OutputCalibrated ? "" : "(uncalibrated)")</h4>
+                <ContextBreakdownView Categories="Analysis.OutputBreakdown" OnSelect="OnSelect" />
+            }
+        </BbCardContent>
+    </BbCard>
+}
+
+@code {
+    [Parameter, EditorRequired] public ExchangeAnalysis Analysis { get; set; } = null!;
+
+    [Parameter] public EventCallback<ContextSegment> OnSelect { get; set; }
+}

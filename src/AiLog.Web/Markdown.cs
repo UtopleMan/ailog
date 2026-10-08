@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Components;
 
 namespace AiLog.Web;
 
+/// <summary>Renders logged markdown to safe HTML.</summary>
 public static class Markdown
 {
     // Raw HTML is escaped, not passed through: prompts are full of tags like <system-reminder> that must show
@@ -12,5 +13,6 @@ public static class Markdown
         .DisableHtml()
         .Build();
 
+    /// <summary>Converts markdown to HTML with raw HTML escaped.</summary>
     public static MarkupString Render(string text) => new(Markdig.Markdown.ToHtml(text, Pipeline));
 }

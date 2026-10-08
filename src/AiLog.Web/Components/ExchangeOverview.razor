@@ -1,0 +1,42 @@
+@* Timing, routing, format and token totals of one exchange. *@
+
+<BbCard Class="detail-card">
+    <BbCardContent Class="detail-card-content">
+        <dl class="overview">
+            <dt>Started</dt><dd class="mono">@Display.FullTime(Log.StartedAt)</dd>
+            <dt>Completed</dt><dd class="mono">@Display.FullTime(Log.CompletedAt)</dd>
+            <dt>Duration</dt><dd class="mono">@Display.Duration(Log.DurationMs)</dd>
+            <dt>Route</dt><dd>@Log.Route</dd>
+            <dt>Upstream</dt><dd class="mono">@Log.UpstreamUrl</dd>
+            <dt>Format</dt><dd>@(Analysis.Provider?.Name ?? "not recognised")@(Analysis.Harness is { } harness ? $" · {harness.Name}" : "")</dd>
+            @if (Analysis.Model is { } model)
+            {
+                <dt>Model</dt><dd class="mono">@model</dd>
+            }
+            @if (Log.Error is { } error)
+            {
+                <dt>Error</dt><dd class="error-text">@error</dd>
+            }
+            <dt>Input</dt><dd class="mono">@InputSummary</dd>
+            <dt>Output</dt><dd class="mono">@OutputSummary</dd>
+        </dl>
+        @if (Analysis.Error is { } analysisError)
+        {
+            <p class="warning">@analysisError</p>
+        }
+    </BbCardContent>
+</BbCard>
+
+@code {
+    [Parameter, EditorRequired] public ExchangeLog Log { get; set; } = null!;
+
+    [Parameter, EditorRequired] public ExchangeAnalysis Analysis { get; set; } = null!;
+
+    private string InputSummary => Analysis.Usage is { InputTokens: not null } usage
+        ? $"{Display.ExactTokens(usage.InputTokens)} tokens ({Display.InputBreakdown(usage)})"
+        : "—";
+
+    private string OutputSummary => Analysis.Usage?.OutputTokens is { } output
+        ? $"{Display.ExactTokens(output)} tokens"
+        : "—";
+}

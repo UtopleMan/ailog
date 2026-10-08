@@ -1,5 +1,4 @@
 @* One collapsible row of a request or response tree. Content (and markdown) is only rendered when expanded. *@
-@inject IJSRuntime JS
 
 <div class="seg seg-@Segment.Kind.ToString().ToLowerInvariant() @(Segment.Cached ? "cached" : "") @(State.Highlighted == Segment.Id ? "highlighted" : "")" id="@Segment.Id">
     <div class="seg-head" @onclick="Toggle">
@@ -38,7 +37,7 @@
 
             @if (!Segment.IsLeaf)
             {
-                @foreach (var child in Segment.Children)
+                @foreach (ContextSegment child in Segment.Children)
                 {
                     <SegmentView @key="child.Id" Segment="child" State="State" />
                 }
@@ -47,7 +46,7 @@
             {
                 <div class="seg-tools">
                     <button class="link-button" @onclick="ToggleSource">@(ShowSource ? "Rendered" : "Source")</button>
-                    <button class="link-button" @onclick="() => Copy(text)">Copy</button>
+                    <CopyButton Text="@text" />
                 </div>
                 @if (ShowSource)
                 {
@@ -61,7 +60,7 @@
             else if (Segment.Json is { } json)
             {
                 <div class="seg-tools">
-                    <button class="link-button" @onclick="() => Copy(json)">Copy</button>
+                    <CopyButton Text="@json" />
                 </div>
                 <pre class="code">@json</pre>
             }
@@ -98,6 +97,4 @@
             State.ShowSource.Add(Segment.Id);
         }
     }
-
-    private async Task Copy(string text) => await JS.InvokeVoidAsync("navigator.clipboard.writeText", text);
 }

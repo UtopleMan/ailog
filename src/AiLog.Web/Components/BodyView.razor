@@ -1,5 +1,4 @@
 @* A logged body as text: JSON indented, text as-is, binary only described. *@
-@inject IJSRuntime JS
 
 @if (Body is null)
 {
@@ -17,7 +16,7 @@ else
         <span class="spacer"></span>
         @if (Text is { } text)
         {
-            <button class="link-button" @onclick="() => Copy(text)">Copy</button>
+            <CopyButton Text="@text" />
         }
     </div>
     @if (Body.Note is { } note)
@@ -35,31 +34,29 @@ else
 }
 
 @code {
+    private LoggedBody? formattedFor;
+
     [Parameter, EditorRequired] public LoggedBody? Body { get; set; }
-
-    private LoggedBody? _formattedFor;
-
-    private async Task Copy(string text) => await JS.InvokeVoidAsync("navigator.clipboard.writeText", text);
-
-    private string? _text;
 
     /// <summary>Formatted once per body; large bodies are expensive to indent on every render.</summary>
     private string? Text
     {
         get
         {
-            if (!ReferenceEquals(_formattedFor, Body))
+            if (!ReferenceEquals(formattedFor, Body))
             {
-                _formattedFor = Body;
-                _text = Body?.Format switch
-                {
-                    BodyFormat.Json => Json.Format(Body.Content),
-                    BodyFormat.Text => Body.Content.GetString(),
-                    _ => null,
-                };
+                formattedFor = Body;
+                field = Format(Body);
             }
 
-            return _text;
+            return field;
         }
     }
+
+    private static string? Format(LoggedBody? body) => body?.Format switch
+    {
+        BodyFormat.Json => Json.Format(body.Content),
+        BodyFormat.Text => body.Content.GetString(),
+        _ => null,
+    };
 }

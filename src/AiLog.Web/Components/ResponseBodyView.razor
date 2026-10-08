@@ -1,0 +1,36 @@
+@* A response body; event streams can also be shown reassembled or as parsed events. *@
+
+@if (Analysis.Events is { } events)
+{
+    <BbToggleGroup TValue="string" @bind-Value="Stream.View" Type="ToggleGroupType.Single" Required="true"
+                   Variant="ToggleVariant.Outline" Size="ToggleSize.Small" Class="stream-toggle">
+        <BbToggleGroupItem TValue="string" Value="@StreamBodyState.Reassembled" Disabled="@(Analysis.Reassembled is null)">Reassembled</BbToggleGroupItem>
+        <BbToggleGroupItem TValue="string" Value="@StreamBodyState.Events">Events (@events.Count)</BbToggleGroupItem>
+        <BbToggleGroupItem TValue="string" Value="@StreamBodyState.Raw">Raw</BbToggleGroupItem>
+    </BbToggleGroup>
+    @if (Stream.View == StreamBodyState.Reassembled && Stream.ReassembledText is { } reassembled)
+    {
+        <p class="notice small">The final message rebuilt from the stream, as a non-streaming call would have returned it.</p>
+        <pre class="code">@reassembled</pre>
+    }
+    else if (Stream.View == StreamBodyState.Events)
+    {
+        <pre class="code">@Stream.EventsText</pre>
+    }
+    else
+    {
+        <BodyView Body="Response.Body" />
+    }
+}
+else
+{
+    <BodyView Body="Response.Body" />
+}
+
+@code {
+    [Parameter, EditorRequired] public LoggedResponse Response { get; set; } = null!;
+
+    [Parameter, EditorRequired] public ExchangeAnalysis Analysis { get; set; } = null!;
+
+    [Parameter, EditorRequired] public StreamBodyState Stream { get; set; } = null!;
+}

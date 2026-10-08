@@ -1,0 +1,1 @@
+- **C#**: before writing or editing any `.cs`/`.razor` code, read [docs/csharp-standards.md](docs/csharp-standards.md).

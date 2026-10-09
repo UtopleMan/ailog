@@ -160,5 +160,18 @@ public static class AiLogApp
         }
 
         Console.WriteLine($"  logs: {options.LogsPath}");
+
+        if (addresses.Count > 0)
+        {
+            PrintHarnessCommands(addresses.First(), options.Routes);
+        }
+    }
+
+    private static void PrintHarnessCommands(string proxyAddress, IReadOnlyDictionary<string, string> routes)
+    {
+        foreach (string line in HarnessCommands.Describe(proxyAddress, routes))
+        {
+            Console.WriteLine($"  {line}");
+        }
     }
 }

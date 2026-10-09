@@ -25,8 +25,20 @@ internal static class UiEndpoints
 
     extension(WebApplication app)
     {
-        /// <summary>Must run before routing.</summary>
-        public void UseUiPaths() => app.Use(RewriteUiPath);
+        /// <summary>
+        /// Serves AiLog.Web's files: embedded in the executable once published, otherwise straight from the
+        /// project folders through static web assets. Must run before routing.
+        /// </summary>
+        public void UseUiFiles()
+        {
+            if (EmbeddedUiFileProvider.Load(typeof(UiEndpoints).Assembly) is { } embedded)
+            {
+                app.Environment.WebRootFileProvider = embedded;
+            }
+
+            app.Use(RewriteUiPath);
+            app.UseStaticFiles();
+        }
 
         public void MapUi()
         {
@@ -36,12 +48,6 @@ internal static class UiEndpoints
             api.MapGet("/logs/events", (LogIndex index, IHostApplicationLifetime lifetime, CancellationToken aborted) =>
                 TypedResults.ServerSentEvents(StreamEvents(index, lifetime.ApplicationStopping, aborted)));
             api.MapGet("/logs/{id}", GetLog);
-
-            // Static web assets of AiLog.Web are published under the _ailog base path.
-            if (HasAssets(app))
-            {
-                app.MapStaticAssets();
-            }
         }
     }
 
@@ -59,7 +65,7 @@ internal static class UiEndpoints
     }
 
     public static bool HasAssets(WebApplication app) =>
-        File.Exists(Path.Combine(app.Environment.ContentRootPath, $"{app.Environment.ApplicationName}.staticwebassets.endpoints.json"));
+        app.Environment.WebRootFileProvider.GetFileInfo(AppShell).Exists;
 
     private static Task RewriteUiPath(HttpContext context, RequestDelegate next)
     {
@@ -72,6 +78,7 @@ internal static class UiEndpoints
 
         // StaticWebAssetBasePath only moves AiLog.Web's own files under /_ailog; NuGet package assets
         // (BlazorBlueprint's CSS and JS) stay at /_content, but the app requests them relative to its base href.
+        // The embedded UI keeps the same layout.
         if (path.StartsWithSegments(Root + PackageContent, out PathString rest))
         {
             context.Request.Path = PackageContent + rest;

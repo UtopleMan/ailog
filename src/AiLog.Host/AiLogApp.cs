@@ -62,7 +62,8 @@ public static class AiLogApp
         builder.Configuration.AddInMemoryCollection(ReadPrefixedEnvironment());
         builder.Configuration.AddCommandLine(args, SwitchMappings);
 
-        // Serve AiLog.Web straight from its project folders when running from a build (no-op once published).
+        // Serve AiLog.Web straight from its project folders when running from a build (no-op once published,
+        // when the UI is embedded instead).
         builder.WebHost.UseStaticWebAssets();
         return builder;
     }
@@ -131,7 +132,7 @@ public static class AiLogApp
 
     private static void MapEndpoints(WebApplication app)
     {
-        app.UseUiPaths();
+        app.UseUiFiles();
         app.UseRouting();
         app.MapUi();
 

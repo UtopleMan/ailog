@@ -23,6 +23,12 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Named the way the host's publish embeds the UI; app.css as a Windows publish names it. -->
+    <EmbeddedResource Include="EmbeddedUi/index.html" LogicalName="ui/_ailog/index.html" />
+    <EmbeddedResource Include="EmbeddedUi/app.css" LogicalName="ui/_ailog\css\app.css" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\..\src\AiLog.Host\AiLog.Host.csproj" />
   </ItemGroup>
 

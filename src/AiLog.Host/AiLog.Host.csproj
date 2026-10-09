@@ -11,10 +11,19 @@
     <EnableConfigurationBindingGenerator>true</EnableConfigurationBindingGenerator>
   </PropertyGroup>
 
+  <PropertyGroup>
+    <!-- dotnet publish embeds the UI in the executable, so a release has no wwwroot folder. Other builds serve it
+         from AiLog.Web's project folders through static web assets. -->
+    <EmbedUi Condition="'$(EmbedUi)' == '' And '$(_IsPublishing)' == 'true'">true</EmbedUi>
+    <UiPublishDir>$(MSBuildProjectDirectory)/$(BaseIntermediateOutputPath)ui/$(Configuration)/</UiPublishDir>
+    <!-- With the UI embedded the host has no static web assets, so no (empty) endpoints manifest is published. -->
+    <StaticWebAssetsEnabled Condition="'$(EmbedUi)' == 'true'">false</StaticWebAssetsEnabled>
+  </PropertyGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\AiLog.Contracts\AiLog.Contracts.csproj" />
     <!-- For its static web assets (the WASM app and its package content); the host never loads the assembly. -->
-    <ProjectReference Include="..\AiLog.Web\AiLog.Web.csproj" />
+    <ProjectReference Include="..\AiLog.Web\AiLog.Web.csproj" Condition="'$(EmbedUi)' != 'true'" />
     <ProjectReference Include="..\AiLog.Shared\AiLog.Shared.csproj" />
   </ItemGroup>
 
@@ -27,5 +36,23 @@
   <ItemGroup>
     <InternalsVisibleTo Include="AiLog.Host.Tests" />
   </ItemGroup>
+
+  <!-- Publishes AiLog.Web on its own and embeds its files as "ui/<web path>" resources (see EmbeddedUiFileProvider).
+       The precompressed .br and .gz copies are left out: the UI is served over localhost. -->
+  <Target Name="EmbedUi" BeforeTargets="AssignTargetPaths" Condition="'$(EmbedUi)' == 'true'">
+    <RemoveDir Directories="$(UiPublishDir)" />
+    <MSBuild Projects="..\AiLog.Web\AiLog.Web.csproj"
+             Targets="Publish"
+             Properties="Configuration=$(Configuration);PublishDir=$(UiPublishDir)"
+             RemoveProperties="RuntimeIdentifier;SelfContained;PublishAot;_IsPublishing;EmbedUi" />
+
+    <ItemGroup>
+      <!-- A standalone publish puts package content under _ailog/_content; served at /_content as in other builds. -->
+      <UiPackageFile Include="$(UiPublishDir)wwwroot/_ailog/_content/**" Exclude="**/*.br;**/*.gz" />
+      <UiAppFile Include="$(UiPublishDir)wwwroot/**" Exclude="@(UiPackageFile);**/*.br;**/*.gz" />
+      <EmbeddedResource Include="@(UiPackageFile)" LogicalName="ui/_content/%(RecursiveDir)%(Filename)%(Extension)" WithCulture="false" />
+      <EmbeddedResource Include="@(UiAppFile)" LogicalName="ui/%(RecursiveDir)%(Filename)%(Extension)" WithCulture="false" />
+    </ItemGroup>
+  </Target>
 
 </Project>

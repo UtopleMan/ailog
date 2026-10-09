@@ -41,6 +41,13 @@
        The precompressed .br and .gz copies are left out: the UI is served over localhost. -->
   <Target Name="EmbedUi" BeforeTargets="AssignTargetPaths" Condition="'$(EmbedUi)' == 'true'">
     <RemoveDir Directories="$(UiPublishDir)" />
+
+    <!-- AiLog.Web is not a project reference while embedding, so the host's restore skips it. The restore runs
+         with an extra property so that the publish below evaluates the project afresh and sees the restored packages. -->
+    <MSBuild Projects="..\AiLog.Web\AiLog.Web.csproj"
+             Targets="Restore"
+             Properties="Configuration=$(Configuration);EmbedUiRestore=true"
+             RemoveProperties="RuntimeIdentifier;SelfContained;PublishAot;_IsPublishing;EmbedUi" />
     <MSBuild Projects="..\AiLog.Web\AiLog.Web.csproj"
              Targets="Publish"
              Properties="Configuration=$(Configuration);PublishDir=$(UiPublishDir)"

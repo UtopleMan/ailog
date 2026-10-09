@@ -1,2 +1,0 @@
-- **Clean code**: before writing, reviewing or editing code in any language, read [docs/clean-code.md](docs/clean-code.md).
-- **C#**: before writing, reviewing or editing any `.cs`/`.razor` code, also read [docs/csharp-standards.md](docs/csharp-standards.md).

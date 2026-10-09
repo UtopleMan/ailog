@@ -1,3 +1,8 @@
+---
+name: clean-code
+description: Clean code principles. Use before writing, reviewing or editing code in any language.
+---
+
 # Clean code
 
 Uncle Bob's *Clean Code*: code reads like well-written prose to the next developer. When in doubt, default to clean.

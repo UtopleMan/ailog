@@ -1,6 +1,11 @@
+---
+name: csharp
+description: C# coding standards. Use before writing, reviewing or editing .cs or .razor code.
+---
+
 # C# coding standards
 
-Target is C# 14 / .NET 10: reach for the newest construct that fits.
+These build on the clean-code skill; apply both. Target is C# 14 / .NET 10: reach for the newest construct that fits.
 
 ## Naming
 

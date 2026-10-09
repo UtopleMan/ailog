@@ -1,0 +1,103 @@
+# Publishes the native AOT ailog executable for Windows, Linux and macOS and attaches the archives to a GitHub release.
+# Native AOT cannot cross-compile between operating systems, so every runtime is built on a runner of its own OS.
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release, e.g. v1.0.0 (created from the selected branch if it does not exist)"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  # Matches the SDK the Web project's index.html placeholder workaround was verified against.
+  DOTNET_VERSION: "10.0.301"
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+      - run: dotnet test tests/AiLog.Host.Tests -c Release
+
+  publish:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rid: win-x64
+            os: windows-latest
+          - rid: win-arm64
+            os: windows-11-arm
+          - rid: linux-x64
+            os: ubuntu-latest
+          - rid: linux-arm64
+            os: ubuntu-24.04-arm
+          - rid: osx-arm64
+            os: macos-latest
+          - rid: osx-x64
+            os: macos-latest
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Publish
+        run: dotnet publish src/AiLog.Host -c Release -r ${{ matrix.rid }} -o publish/ailog
+
+      - name: Package
+        run: |
+          cd publish
+          # Debug symbols are not shipped.
+          rm -rf ailog/*.pdb ailog/*.dSYM ailog/*.dbg
+          name="ailog-${TAG}-${{ matrix.rid }}"
+          if [[ "${{ matrix.rid }}" == win-* ]]; then
+            7z a "$name.zip" ailog > /dev/null
+          else
+            tar -czf "$name.tar.gz" ailog
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ailog-${{ matrix.rid }}
+          path: |
+            publish/*.zip
+            publish/*.tar.gz
+          if-no-files-found: error
+
+  release:
+    needs: publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$TAG" artifacts/* \
+            --repo "${{ github.repository }}" \
+            --target "${{ github.sha }}" \
+            --title "$TAG" \
+            --generate-notes

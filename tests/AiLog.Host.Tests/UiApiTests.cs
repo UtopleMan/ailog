@@ -231,7 +231,7 @@ public sealed class UiApiTests
     [Fact]
     public void A_proxy_route_named_after_the_ui_prefix_is_refused()
     {
-        InvalidOperationException error = Assert.Throws<InvalidOperationException>(() =>
+        ConfigurationException error = Assert.Throws<ConfigurationException>(() =>
             AiLogApp.Build(["--port", "0", "--logs", Path.GetTempPath(), "--AiLog:Routes:_AILOG=http://localhost:1"]));
 
         Assert.Contains("reserved", error.Message);

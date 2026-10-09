@@ -70,4 +70,60 @@ public sealed class HarnessCommandsTests
 
         Assert.DoesNotContain(lines, line => line.StartsWith("copilot"));
     }
+
+    [Fact]
+    public void Foundry_starts_claude_in_foundry_mode_and_copilot_with_the_azure_provider()
+    {
+        Dictionary<string, string> routes = new() { ["foundry"] = "https://my-resource.services.ai.azure.com" };
+
+        IReadOnlyList<string> lines = HarnessCommands.Describe(ProxyAddress, routes);
+
+        Assert.Contains(
+            "claude (macOS): CLAUDE_CODE_USE_FOUNDRY=1 ANTHROPIC_FOUNDRY_BASE_URL=http://localhost:5100/foundry/anthropic "
+            + "ANTHROPIC_FOUNDRY_API_KEY=YOUR-FOUNDRY-API-KEY claude",
+            lines);
+        Assert.Contains(
+            "copilot (Windows): $env:COPILOT_PROVIDER_TYPE='azure'; $env:COPILOT_PROVIDER_BASE_URL='http://localhost:5100/foundry'; "
+            + "$env:COPILOT_PROVIDER_API_KEY='YOUR-FOUNDRY-API-KEY'; $env:COPILOT_MODEL='YOUR-MODEL'; copilot",
+            lines);
+    }
+
+    [Fact]
+    public void Copilot_on_the_github_route_reads_its_token_from_the_gh_cli()
+    {
+        Dictionary<string, string> routes = new() { ["copilot"] = "https://api.githubcopilot.com" };
+
+        IReadOnlyList<string> lines = HarnessCommands.Describe(ProxyAddress, routes);
+
+        Assert.Contains(
+            "copilot (macOS): COPILOT_PROVIDER_TYPE=openai COPILOT_PROVIDER_BASE_URL=http://localhost:5100/copilot "
+            + "COPILOT_PROVIDER_BEARER_TOKEN=$(gh auth token) COPILOT_PROVIDER_HEADERS='Copilot-Integration-Id: copilot-developer-cli' "
+            + "COPILOT_MODEL=YOUR-MODEL copilot",
+            lines);
+        Assert.Contains(
+            "copilot (Windows): $env:COPILOT_PROVIDER_TYPE='openai'; $env:COPILOT_PROVIDER_BASE_URL='http://localhost:5100/copilot'; "
+            + "$env:COPILOT_PROVIDER_BEARER_TOKEN=$(gh auth token); $env:COPILOT_PROVIDER_HEADERS='Copilot-Integration-Id: copilot-developer-cli'; "
+            + "$env:COPILOT_MODEL='YOUR-MODEL'; copilot",
+            lines);
+    }
+
+    [Fact]
+    public void A_route_named_after_a_provider_gets_its_commands_on_any_upstream()
+    {
+        Dictionary<string, string> routes = new() { ["copilot"] = "https://api.business.githubcopilot.com" };
+
+        IReadOnlyList<string> lines = HarnessCommands.Describe(ProxyAddress, routes);
+
+        Assert.Contains(lines, line => line.Contains("COPILOT_PROVIDER_BEARER_TOKEN"));
+    }
+
+    [Fact]
+    public void A_route_no_provider_recognises_gets_no_commands()
+    {
+        Dictionary<string, string> routes = new() { ["gemini"] = "https://generativelanguage.googleapis.com" };
+
+        IReadOnlyList<string> lines = HarnessCommands.Describe(ProxyAddress, routes);
+
+        Assert.Empty(lines);
+    }
 }

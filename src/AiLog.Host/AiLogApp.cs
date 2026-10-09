@@ -20,9 +20,12 @@ public static class AiLogApp
     {
         ["--port"] = $"{ConfigurationSection}:Port",
         ["--logs"] = $"{ConfigurationSection}:LogsPath",
+        ["--provider"] = $"{ConfigurationSection}:Provider",
+        ["--upstream"] = $"{ConfigurationSection}:Upstream",
     };
 
     /// <summary>Builds the configured application from command-line arguments; not yet started.</summary>
+    /// <exception cref="ConfigurationException">The settings cannot be used.</exception>
     public static WebApplication Build(string[] args)
     {
         WebApplicationBuilder builder = CreateBuilder(args);
